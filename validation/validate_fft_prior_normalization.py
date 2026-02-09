@@ -2,9 +2,9 @@
 """
 Sanity checks for the FFT-diagonal prior normalization used in `cad.prior`.
 
-This tests consistency between:
-  - `cad.FourierGaussianPrior.apply_Cinv`
-  - `cad.power.radial_cl_1d_from_map`
+Checks:
+  - Constant C_ell: C^{-1} = (dx dy / C_ell) I in pixel space.
+  - MC: sample maps with target C_ell, recover mean C_ell.
 """
 
 from __future__ import annotations
@@ -16,13 +16,7 @@ from cad import power
 
 
 def _ell_edges_like_prior(*, nx: int, ny: int, pixel_res_rad: float, n_ell_bins: int) -> np.ndarray:
-    """
-    Reproduce the ell bin edges used by the FFT prior.
-
-    The prior bins modes on the rfft2 coefficient grid (nx, ny//2+1) with:
-      - ell_x fftshifted
-      - ell_y non-negative (rfftfreq)
-    """
+    """Reproduce ell bin edges used by the FFT prior."""
     nx = int(nx)
     ny = int(ny)
     dx = float(pixel_res_rad)
@@ -34,9 +28,7 @@ def _ell_edges_like_prior(*, nx: int, ny: int, pixel_res_rad: float, n_ell_bins:
 
 
 def _bin_idx_full_fft2(*, nx: int, ny: int, pixel_res_rad: float, edges: np.ndarray) -> np.ndarray:
-    """
-    Bin indices for the full fft2 grid (nx, ny), using `edges`.
-    """
+    """Bin indices for the full fft2 grid (nx, ny), using `edges`."""
     nx = int(nx)
     ny = int(ny)
     dx = float(pixel_res_rad)
@@ -53,12 +45,7 @@ def _bin_idx_full_fft2(*, nx: int, ny: int, pixel_res_rad: float, edges: np.ndar
 
 
 def _sample_real_field_fft2(*, nx: int, ny: int, var_fk: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """
-    Sample a real periodic field x on an (nx, ny) grid by sampling full FFT coefficients.
-
-    Args:
-      var_fk: (nx, ny) with desired E[|F(k)|^2] for unnormalized numpy FFT2 coefficients.
-    """
+    """Sample a real periodic field via full FFT2 coefficients."""
     nx = int(nx)
     ny = int(ny)
     var_fk = np.asarray(var_fk, dtype=np.float64)
@@ -118,7 +105,7 @@ def main() -> None:
     n_ell_bins = 64
     cl_floor_mk2 = 1e-12
 
-    # (1) Constant C_ell: C^{-1} should be scalar * I in pixel space.
+    # (1) Constant C_ell: C^{-1} = (dx dy / C_ell) I.
     cl0 = 7.0  # mK^2
     prior_const = cad.FourierGaussianPrior(
         nx=nx,
@@ -133,7 +120,7 @@ def main() -> None:
     rel_err = float(np.linalg.norm(y - y_ref) / np.linalg.norm(y_ref))
     print(f"[const] rel_err(apply_Cinv vs scalar*I) = {rel_err:.3e}")
 
-    # (2) Varying spectrum: sample Gaussian maps and compare mean estimated C_ell.
+    # (2) Varying spectrum: sample Gaussian maps and compare mean C_ell.
     edges = _ell_edges_like_prior(nx=nx, ny=ny, pixel_res_rad=pixel_res_rad, n_ell_bins=n_ell_bins)
     ell_centers = 0.5 * (edges[:-1] + edges[1:])
     cl_bins = 50.0 * (1.0 + (ell_centers / 600.0) ** 2) ** (-1.5)
@@ -147,8 +134,7 @@ def main() -> None:
         cl_floor_mk2=float(cl_floor_mk2),
     )
 
-    # Sample by drawing Fourier coeffs with E|F(k)|^2 = n_pix * C_ell / (dxdy),
-    # enforcing Hermitian symmetry so x is real.
+    # Sample with E|F(k)|^2 = n_pix * C_ell / (dxdy).
     bin_idx_full = _bin_idx_full_fft2(nx=nx, ny=ny, pixel_res_rad=pixel_res_rad, edges=edges)
     cl_mode_full = np.asarray(cl_bins, dtype=np.float64)[bin_idx_full]  # (nx, ny)
     var_fk = float(n_pix) * cl_mode_full / dxdy  # E|F(k)|^2

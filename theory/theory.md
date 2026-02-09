@@ -56,6 +56,18 @@ $$
 
 Both $C_a$ and $C_c$ are implemented as stationary FFT-diagonal operators on their respective finite bboxes (periodic boundary on that bbox). Units are mK$^2$.
 
+### Anisotropic RA/Dec metric in the prior
+The pixel grid is uniform in RA/Dec degrees, but physical length in RA is smaller by $\cos\delta$.
+We therefore define Fourier radius using
+
+$$
+\ell = \sqrt{\left(\frac{k_x}{\cos\delta}\right)^2 + k_y^2},
+$$
+
+so that isotropic spectra on the sky remain isotropic in physical space. The FFT prior
+normalization uses $dx\,dy = (\Delta_{\rm pix}^2)\cos\delta$, where $\Delta_{\rm pix}$ is in radians.
+The pointing grid itself remains unchanged; only the prior's spectral weighting is anisotropic.
+
 ## Estimators
 
 - **ML**: maximize likelihood w.r.t. $(c,\{a_s^0\})$ (equivalently a flat prior on $c$; $C_c^{-1}=0$).
@@ -76,12 +88,12 @@ without explicitly forming the marginal covariance $\tilde N_s = N_s + W_s C_a W
 For each scan $s$, the blocks are
 
 $$
-\\begin{aligned}
-A_{cc} &+= P_s^T N_s^{-1} P_s + \\mathbf{1}_{\\rm MAP}\\,C_c^{-1} \\\\
+\begin{aligned}
+A_{cc} &+= P_s^T N_s^{-1} P_s + \mathbf{1}_{\rm MAP} \, C_c^{-1} \\\\
 A_{c a_s} &= P_s^T N_s^{-1} W_s \\\\
 A_{a_s c} &= W_s^T N_s^{-1} P_s \\\\
 A_{a_s a_s} &= W_s^T N_s^{-1} W_s + C_a^{-1}
-\\end{aligned}
+\end{aligned}
 $$
 
 and the right-hand side is
@@ -91,7 +103,14 @@ b_c = \sum_s P_s^T N_s^{-1} d_s,\qquad
 b_{a_s} = W_s^T N_s^{-1} d_s.
 $$
 
-The multi-scan solve uses Conjugate Gradient with a diagonal preconditioner built from hit-count approximations plus a constant diagonal estimate of $C^{-1}$ from `FourierGaussianPrior.apply_Cinv(e0)[0]`.
+The multi-scan solve uses Conjugate Gradient with a diagonal preconditioner. For each scan:
+
+- **CMB block**: $\mathrm{diag}(P_s^T N_s^{-1} P_s)$ (hit-count / noise) plus, for MAP, a diagonal
+  approximation to $C_c^{-1}$ using `FourierGaussianPrior.apply_Cinv(e0)[0]`.
+- **Atmosphere block**: $\mathrm{diag}(W_s^T N_s^{-1} W_s)$ plus a diagonal approximation to $C_a^{-1}$
+  using `FourierGaussianPrior.apply_Cinv(e0)[0]`.
+
+This block-diagonal preconditioner is used in both the single-scan and multi-scan CG solves.
 
 ## Grids, masks, and monopole
 

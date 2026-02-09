@@ -3,8 +3,8 @@
 Toy single-scan validation for `cad.reconstruct_scan`.
 
 Checks:
-  - Adjoint tests for P/P^T and W/W^T.
-  - End-to-end ML solve on a small synthetic scan.
+  - Adjoint test: <P c, y> = <c, P^T y>, <W a, y> = <a, W^T y>.
+  - ML solve: d = P c + W a + n recovers c on hit pixels.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ def main() -> None:
 
     pixel_size_deg = 1.0
     pixel_res_rad = float(pixel_size_deg) * np.pi / 180.0
-
     bbox_cmb = BBox(ix0=0, ix1=7, iy0=0, iy1=7)  # 8x8
     bbox_atm = BBox(ix0=-3, ix1=10, iy0=-3, iy1=10)  # 14x14 (padded)
 
@@ -33,7 +32,7 @@ def main() -> None:
     n_det = 6
     t_s = np.linspace(0.0, 20.0, n_t).astype(np.float64)
 
-    # Simple scan: boresight sweeps in +ix; detectors offset in iy.
+    # Scan geometry: boresight sweeps in +ix; detectors offset in iy.
     ix_base = np.linspace(1, 6, n_t).round().astype(np.int64)
     iy_base = np.full((n_t,), 3, dtype=np.int64)
     det_dy = np.arange(n_det, dtype=np.int64) - (n_det // 2)
@@ -46,10 +45,12 @@ def main() -> None:
 
     wind_deg_per_s = (0.25, -0.05)
 
+    # Pointing operator P and valid mask.
     tod_dummy = np.zeros((n_t, n_det), dtype=np.float64)
     pm, vm = cad.util.pointing_from_pix_index(pix_index=pix_index, tod_mk=tod_dummy, bbox=bbox_cmb)
     pix_obs_local = pm[vm].astype(np.int64, copy=False)
 
+    # Atmosphere operator W (bilinear sampling of a0).
     idx4, w4 = cad.util.frozen_screen_bilinear_weights(
         pointing_matrix=pm,
         valid_mask=vm,
@@ -78,7 +79,7 @@ def main() -> None:
         np.add.at(out, idx4.reshape(-1), (w4 * yy[:, None]).reshape(-1))
         return out
 
-    # Adjoint tests.
+    # Adjoint tests: <P c, y> = <c, P^T y>, <W a, y> = <a, W^T y>.
     c = rng.normal(size=(n_pix_cmb,))
     y = rng.normal(size=(pix_obs_local.size,))
     print(f"[adjoint] P mismatch = {float(np.dot(P_apply(c), y) - np.dot(c, PT_apply(y))):.3e}")
@@ -87,7 +88,7 @@ def main() -> None:
     y2 = rng.normal(size=(pix_obs_local.size,))
     print(f"[adjoint] W mismatch = {float(np.dot(W_apply(a), y2) - np.dot(a, WT_apply(y2))):.3e}")
 
-    # Synthetic data.
+    # Synthetic data: d = P c + W a + n.
     c_true = rng.normal(size=(n_pix_cmb,))
     a_true = rng.normal(size=(n_pix_atm,))
     d_valid = P_apply(c_true) + W_apply(a_true)
@@ -99,12 +100,14 @@ def main() -> None:
     n_ell_bins = 32
     cl_atm = np.full((n_ell_bins,), 10.0, dtype=np.float64)
     cl_cmb = np.full((n_ell_bins,), 1.0, dtype=np.float64)
+    # Priors (flat spectrum for toy).
     prior_atm = cad.FourierGaussianPrior(nx=nx_a, ny=ny_a, pixel_res_rad=pixel_res_rad, cl_bins_mk2=cl_atm)
     prior_cmb = cad.FourierGaussianPrior(nx=nx_c, ny=ny_c, pixel_res_rad=pixel_res_rad, cl_bins_mk2=cl_cmb)
 
     obs_pix = np.arange(n_pix_cmb, dtype=np.int64)
     global_to_obs = np.arange(n_pix_cmb, dtype=np.int64)
 
+    # ML solve and compare on hit pixels (mean removed).
     sol = cad.reconstruct_scan.solve_single_scan(
         tod_mk=tod,
         pix_index=pix_index,

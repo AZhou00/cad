@@ -2,7 +2,8 @@
 """
 Toy multi-scan validation for `cad.synthesize_scans`.
 
-This runs a combined ML solve on synthetic two-scan data with different winds.
+Checks:
+  - ML solve across scans with different winds improves recovery of c.
 """
 
 from __future__ import annotations
@@ -10,14 +11,12 @@ from __future__ import annotations
 import numpy as np
 
 import cad
-from cad.map import BBox
 
 
 def main() -> None:
     rng = np.random.default_rng(1)
 
     pixel_size_deg = 1.0
-    pixel_res_rad = float(pixel_size_deg) * np.pi / 180.0
     n_ell_bins = 32
 
     # Two scans, same pointing geometry, different winds.
@@ -28,6 +27,7 @@ def main() -> None:
     n_det = 6
     t_s = np.linspace(0.0, 20.0, n_t).astype(np.float64)
 
+    # Scan geometry: boresight sweeps in +ix; detectors offset in iy.
     ix_base = np.linspace(1, 6, n_t).round().astype(np.int64)
     iy_base = np.full((n_t,), 3, dtype=np.int64)
     det_dy = np.arange(n_det, dtype=np.int64) - (n_det // 2)
@@ -36,24 +36,23 @@ def main() -> None:
     pix_index0[..., 0] = ix_base[:, None]
     pix_index0[..., 1] = iy_base[:, None] + det_dy[None, :]
 
-    # Tight bbox around the hits (matches cad's default behavior).
+    # BBox from hits (matches cad's behavior).
     valid_all = np.ones((n_t, n_det), dtype=bool)
     bbox_cmb = cad.map.scan_bbox_from_pix_index(pix_index=pix_index0, valid_mask=valid_all)
 
     scans_pix_index = [pix_index0.copy() for _ in range(n_scans)]
     scans_t_s = [t_s.copy() for _ in range(n_scans)]
 
-    # Truth CMB on the (unknown-to-solver) eventual bbox grid:
-    # use the bbox implied by the pointing.
+    # Truth CMB on the bbox grid implied by pointing.
     n_pix_cmb = int(bbox_cmb.nx * bbox_cmb.ny)
     c_true = rng.normal(size=(n_pix_cmb,)).astype(np.float64)
 
-    # Build synthetic TOD by calling cad's internal operator builder via a per-scan solve.
-    # This keeps the toy script small and consistent with cad's conventions.
+    # Synthetic TOD: d = P c + W a + n, using cad's operators.
     sigma_det = 0.1 * np.ones((n_det,), dtype=np.float64)
     cl_atm = np.full((n_ell_bins,), 10.0, dtype=np.float64)
     cl_cmb = np.full((n_ell_bins,), 1.0, dtype=np.float64)
 
+    # Atmosphere bbox padded for open-boundary advection.
     bbox_atm = cad.util.bbox_pad_for_open_boundary(
         bbox_obs=bbox_cmb,
         scans_pix_index=scans_pix_index,
@@ -68,7 +67,7 @@ def main() -> None:
     scans_tod = []
     for si in range(n_scans):
         a_true = rng.normal(size=(n_pix_atm,)).astype(np.float64)
-        # Build operators.
+        # Build P/W operators for this scan.
         pm, vm = cad.util.pointing_from_pix_index(pix_index=scans_pix_index[si], tod_mk=np.zeros((n_t, n_det)), bbox=bbox_cmb)
         pix = pm[vm].astype(np.int64)
         Pc = c_true[pix]
@@ -89,6 +88,7 @@ def main() -> None:
         tod[vm] = d_valid + rng.normal(scale=sigma_det[np.where(vm)[1]])
         scans_tod.append(tod)
 
+    # ML solve across scans and compare on hit pixels (mean removed).
     sol = cad.synthesize_scans(
         scans_tod_mk=scans_tod,
         scans_pix_index=scans_pix_index,

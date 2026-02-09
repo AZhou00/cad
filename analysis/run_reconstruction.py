@@ -32,13 +32,13 @@ OUT_BASE = BASE_DIR / "output"
 
 @dataclass(frozen=True)
 class Config:
-    outputs_dir: str = "outputs_10arcmin"
+    outputs_dir: str | None = None
     estimator_mode: str = "ML"  # 'ML' or 'MAP'
-    n_ell_bins: int = 64
+    n_ell_bins: int = 128
     cl_floor_mk2: float = 1e-12
     min_hits_per_pix: int = 1
-    cg_tol: float = 1e-3
-    cg_maxiter: int = 800
+    cg_tol: float = 5e-4
+    cg_maxiter: int = 1200
     noise_per_raw_detector_per_153hz_sample_mk: float = 10.0
 
 

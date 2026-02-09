@@ -32,7 +32,7 @@ CAD_DIR = THIS_DIR.parent
 DATA_DIR = CAD_DIR / "data"
 OUT_DIR = THIS_DIR / "output"
 
-N_ELL_BINS = 64
+N_ELL_BINS = 128
 NU_GHZ = 220.0
 EPSILON_DEG = 44.75
 KDOTW_EXCLUDE_COS = 0.5  # exclude modes with |cos(angle(k,w_mean))| < this (k ⟂ w)

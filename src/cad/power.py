@@ -188,7 +188,7 @@ def radial_cl_1d_from_power2d(
     m = ok & (idx >= 0) & (idx < int(n_ell_bins))
     np.add.at(cl, idx[m], ps[m])
     np.add.at(counts, idx[m], 1.0)
-    cl = np.where(counts > 0, cl / counts, np.nan)
+    cl = np.divide(cl, counts, out=np.full_like(cl, np.nan), where=counts > 0)
     ell_centers = 0.5 * (edges[:-1] + edges[1:])
     return ell_centers, cl
 
