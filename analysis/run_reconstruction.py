@@ -8,8 +8,6 @@ Inputs:
 Outputs (all under analysis/output):
   - `cad/analysis/output/reconstruction_<pixTag>_<ml|map>/recon_scanXXX.npz`
   - `cad/analysis/output/reconstruction_<pixTag>_<ml|map>/recon_combined_<ml|map>.npz`
-
-This script prints numeric diagnostics and writes NPZ outputs for plotting.
 """
 
 from __future__ import annotations
