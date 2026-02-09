@@ -325,13 +325,13 @@ def synthesize_scans(
     # Combined operator A * [c; a0_1; ...; a0_S].
     def A_matvec(x: np.ndarray) -> np.ndarray:
         xx = np.asarray(x, dtype=np.float64).reshape(-1)
-        c = xx[:n_obs]
+        c = xx[:n_obs]  # (n_obs,)
         a_all = xx[n_obs:]
         if a_all.size != n_scans * n_pix_atm:
             raise ValueError("A_matvec got wrong shape.")
-        a_blocks = a_all.reshape(n_scans, n_pix_atm)
+        a_blocks = a_all.reshape(n_scans, n_pix_atm)  # (n_scans, n_pix_atm)
 
-        out_c = np.zeros((n_obs,), dtype=np.float64)
+        out_c = np.zeros((n_obs,), dtype=np.float64)  # (n_obs,)
         out_a_blocks: list[np.ndarray] = []
 
         for si in range(n_scans):
@@ -341,19 +341,19 @@ def synthesize_scans(
             inv_var = inv_var_list[si]
             a0 = a_blocks[si]
 
-            Pc = c[pix_obs_local]
-            Wa = np.sum(w4 * a0[idx4], axis=1)
-            u = inv_var * (Pc + Wa)
+            Pc = c[pix_obs_local]  # (n_valid_si,) = (P_s c) on valid TOD samples for scan si
+            Wa = np.sum(w4 * a0[idx4], axis=1)  # (n_valid_si,) = (W_s a0) on valid TOD samples
+            u = inv_var * (Pc + Wa)  # (n_valid_si,) = N_s^{-1}(P_s c + W_s a0)
 
-            out_c += np.bincount(pix_obs_local, weights=u, minlength=n_obs).astype(np.float64, copy=False)
+            out_c += np.bincount(pix_obs_local, weights=u, minlength=n_obs).astype(np.float64, copy=False)  # (n_obs,) += P_s^T u
 
             out_a = np.zeros((n_pix_atm,), dtype=np.float64)
             np.add.at(out_a, idx4.reshape(-1), (w4 * u[:, None]).reshape(-1))
-            out_a = out_a + prior_atm.apply_Cinv(a0)
+            out_a = out_a + prior_atm.apply_Cinv(a0)  # (n_pix_atm,) = W_s^T u + Ca^{-1} a0
             out_a_blocks.append(out_a)
 
         if mode == "MAP":
-            out_c = out_c + prior_cmb.apply_Cinv(c)
+            out_c = out_c + prior_cmb.apply_Cinv(c)  # (n_obs,) += Cc^{-1} c
 
         return np.concatenate([out_c, np.concatenate(out_a_blocks, axis=0)], axis=0)
 

@@ -269,27 +269,29 @@ def solve_single_scan(
         if a0.size != n_pix_atm:
             raise ValueError("A_matvec got wrong shape.")
 
-        Pc = c_act[act_idx]  # (n_valid,)
-        Wa = W_apply(a0)  # (n_valid,)
-        u = inv_var * (Pc + Wa)  # (n_valid,)
+        Pc = c_act[act_idx]  # (n_valid,) = (P c) on valid TOD samples
+        Wa = W_apply(a0)  # (n_valid,) = (W a0) on valid TOD samples
+        u = inv_var * (Pc + Wa)  # (n_valid,) = N^{-1}(P c + W a0) with diagonal N
 
-        out_c = np.bincount(act_idx, weights=u, minlength=n_c).astype(np.float64, copy=False)
+        out_c = np.bincount(act_idx, weights=u, minlength=n_c).astype(np.float64, copy=False)  # (n_c,) = P^T u
         if mode == "MAP":
-            out_c = out_c + (1.0 / float(n_scans)) * prior_cmb.apply_Cinv(c_act)
-        out_a = WT_apply(u) + prior_atm.apply_Cinv(a0)
-        return np.concatenate([out_c, out_a], axis=0)
+            out_c = out_c + (1.0 / float(n_scans)) * prior_cmb.apply_Cinv(c_act)  # (n_c,) += (1/S) Cc^{-1} c
+        out_a = WT_apply(u) + prior_atm.apply_Cinv(a0)  # (n_pix_atm,) = W^T u + Ca^{-1} a0
+        return np.concatenate([out_c, out_a], axis=0)  # (n_c + n_pix_atm,)
 
+    # Matrix-free operator A: R^(n_c+n_pix_atm) -> R^(n_c+n_pix_atm)
     A_op = spla.LinearOperator((n_c + n_pix_atm, n_c + n_pix_atm), matvec=A_matvec, dtype=np.float64)
 
     def Pinv_matvec(x: np.ndarray) -> np.ndarray:
-        xx = np.asarray(x, dtype=np.float64).reshape(-1)
-        xc = xx[:n_c] / diag_c
-        xa = xx[n_c:] / diag_a
-        return np.concatenate([xc, xa], axis=0)
+        xx = np.asarray(x, dtype=np.float64).reshape(-1)  # (n_c + n_pix_atm,)
+        xc = xx[:n_c] / diag_c  # (n_c,) elementwise divide by diag(A_cc) approximation
+        xa = xx[n_c:] / diag_a  # (n_pix_atm,) elementwise divide by diag(A_aa) approximation
+        return np.concatenate([xc, xa], axis=0)  # (n_c + n_pix_atm,)
 
+    # Diagonal preconditioner M ≈ A^{-1} applied as x -> [x_c/diag_c; x_a/diag_a].
     P_pre = spla.LinearOperator(A_op.shape, matvec=Pinv_matvec, dtype=np.float64)
 
-    rhs = np.concatenate([rhs_c_act, rhs_a], axis=0)
+    rhs = np.concatenate([rhs_c_act, rhs_a], axis=0)  # (n_c + n_pix_atm,) = [P^T N^{-1} d; W^T N^{-1} d]
     sol, info = spla.cg(A_op, rhs, M=P_pre, atol=0.0, rtol=float(cg_tol), maxiter=int(cg_maxiter))
     if info != 0:
         raise RuntimeError(f"Joint CG did not converge (info={info}). Increase cg_maxiter or adjust preconditioning.")
