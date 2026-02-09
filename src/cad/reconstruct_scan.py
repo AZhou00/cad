@@ -19,7 +19,7 @@ import numpy as np
 import scipy.sparse.linalg as spla
 
 from .map import BBox
-from .prior import SpectralPriorFFT
+from .prior import FourierGaussianPrior
 from .util import frozen_screen_bilinear_weights, pointing_from_pix_index
 
 
@@ -59,8 +59,8 @@ class ScanSolve:
     inv_var: np.ndarray
     rhs_c: np.ndarray
     rhs_a: np.ndarray
-    prior_atm: SpectralPriorFFT
-    prior_cmb: SpectralPriorFFT
+    prior_atm: FourierGaussianPrior
+    prior_cmb: FourierGaussianPrior
 
 
 def solve_single_scan(
@@ -71,8 +71,8 @@ def solve_single_scan(
     pixel_size_deg: float,
     wind_deg_per_s: tuple[float, float],
     noise_std_det_mk: np.ndarray,
-    prior_atm: SpectralPriorFFT,
-    prior_cmb: SpectralPriorFFT,
+    prior_atm: FourierGaussianPrior,
+    prior_cmb: FourierGaussianPrior,
     bbox_cmb: BBox,
     bbox_atm: BBox,
     obs_pix_cmb: np.ndarray,

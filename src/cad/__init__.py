@@ -8,11 +8,11 @@ The main public entry points are:
 
 from .reconstruct_scan import ScanSolve, solve_single_scan
 from .synthesize_scan import MultiScanSolve, synthesize_scans
-from .prior import SpectralPriorFFT
+from .prior import FourierGaussianPrior
 from .wind import estimate_wind_deg_per_s
 
 __all__ = [
-    "SpectralPriorFFT",
+    "FourierGaussianPrior",
     "estimate_wind_deg_per_s",
     "ScanSolve",
     "solve_single_scan",

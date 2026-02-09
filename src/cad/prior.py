@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 
-def _ell_bin_indices_rfft2(*, nx: int, ny: int, pixel_res_rad: float, n_ell_bins: int) -> np.ndarray:
+def _ell_bin_indices_rfft2(*, nx: int, ny: int, pixel_res_rad: float, cos_dec: float, n_ell_bins: int) -> np.ndarray:
     """
     Build ell-bin indices for rfft2 coefficients.
 
@@ -21,16 +21,22 @@ def _ell_bin_indices_rfft2(*, nx: int, ny: int, pixel_res_rad: float, n_ell_bins
       - we reshape to (nx, ny) (ix as axis 0, iy as axis 1)
       - rfft2 returns shape (nx, ny//2+1); we fftshift only along axis 0
 
-    Returns:
-      bin_idx: int32 array, shape (nx, ny//2+1), values in [0, n_ell_bins-1].
+    If cos_dec != 1.0, the x-axis resolution is physically smaller by cos_dec.
+    To maintain isotropic ell on the sky, we scale the x wavenumbers:
+      kx_phys = kx_grid / cos_dec
     """
     nx = int(nx)
     ny = int(ny)
     dx = float(pixel_res_rad)
+    cos_dec = float(cos_dec)
     n_ell_bins = int(n_ell_bins)
 
     ell_x = np.fft.fftshift(2.0 * np.pi * np.fft.fftfreq(nx, d=dx))  # (nx,)
     ell_y = 2.0 * np.pi * np.fft.rfftfreq(ny, d=dx)  # (ny//2+1,)
+    
+    # Scale x wavenumber to physical units
+    ell_x = ell_x / cos_dec
+
     KX, KY = np.meshgrid(ell_x, ell_y, indexing="ij")  # (nx, ny//2+1)
     ell = np.sqrt(KX * KX + KY * KY)
 
@@ -42,14 +48,15 @@ def _ell_bin_indices_rfft2(*, nx: int, ny: int, pixel_res_rad: float, n_ell_bins
 
 
 @dataclass(frozen=True)
-class SpectralPriorFFT:
+class FourierGaussianPrior:
     """
     Stationary Gaussian prior on a regular grid, diagonal in Fourier space.
 
     Args:
       nx, ny: grid size.
-      pixel_res_rad: pixel size in radians (assumed square pixels).
+      pixel_res_rad: pixel size in radians (assumed square pixels in grid coordinates).
       cl_bins_mk2: (n_ell_bins,) binned C_ell in mK^2.
+      cos_dec: cosine of the reference declination (scales dx -> dx*cos_dec).
       cl_floor_mk2: floor to keep C_ell positive.
 
     Shapes:
@@ -61,6 +68,7 @@ class SpectralPriorFFT:
     ny: int
     pixel_res_rad: float
     cl_bins_mk2: np.ndarray  # (n_ell_bins,)
+    cos_dec: float = 1.0
     cl_floor_mk2: float = 1e-12
 
     def __post_init__(self) -> None:
@@ -73,6 +81,7 @@ class SpectralPriorFFT:
             nx=int(self.nx),
             ny=int(self.ny),
             pixel_res_rad=float(self.pixel_res_rad),
+            cos_dec=float(self.cos_dec),
             n_ell_bins=int(cl.size),
         )
         object.__setattr__(self, "_ell_bin_idx", bin_idx)
@@ -96,7 +105,8 @@ class SpectralPriorFFT:
         Apply C^{-1} in pixel space.
 
         With numpy FFT conventions used here:
-          - dx = dy = pixel_res_rad
+          - dy = pixel_res_rad
+          - dx = pixel_res_rad * cos_dec (physical size of x-pixel)
           - the pixel-space covariance operator has Fourier eigenvalues
               λ(k) = Cl(k) / (dx*dy)
             so the inverse has eigenvalues
@@ -104,7 +114,7 @@ class SpectralPriorFFT:
         """
         X = self._rfft2_shifted(x_pix)
         cl_mode = self._cl_per_mode()
-        dxdy = float(self.pixel_res_rad) * float(self.pixel_res_rad)
+        dxdy = float(self.pixel_res_rad) * float(self.pixel_res_rad) * float(self.cos_dec)
         factor = dxdy / cl_mode
         return self._irfft2_from_shifted(X * factor).real
 
@@ -118,7 +128,6 @@ class SpectralPriorFFT:
         """
         X = self._rfft2_shifted(x_pix)
         cl_mode = self._cl_per_mode()
-        dxdy = float(self.pixel_res_rad) * float(self.pixel_res_rad)
+        dxdy = float(self.pixel_res_rad) * float(self.pixel_res_rad) * float(self.cos_dec)
         factor = cl_mode / dxdy
         return self._irfft2_from_shifted(X * factor).real
-

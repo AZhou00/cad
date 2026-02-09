@@ -35,7 +35,7 @@ OUT_DIR = THIS_DIR / "output"
 N_ELL_BINS = 64
 NU_GHZ = 220.0
 EPSILON_DEG = 44.75
-KDOTW_EXCLUDE_COS = 0.2  # exclude modes with |cos(angle(k,w_mean))| < this (k ⟂ w)
+KDOTW_EXCLUDE_COS = 0.5  # exclude modes with |cos(angle(k,w_mean))| < this (k ⟂ w)
 
 
 def _img_from_vec(vec: np.ndarray, *, nx: int, ny: int) -> np.ndarray:
@@ -177,6 +177,64 @@ def _plot_power2d_comparison(
         cb.ax.set_yticklabels([f"{vmin:.0e}", f"{vmax:.0e}"])
         cb.set_label(r"$C_\ell$ [$\mu K_{\rm CMB}^2$]")
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_nondegenerate_power2d_delta(
+    *,
+    out_path: pathlib.Path,
+    pre_coadd_all: np.ndarray,
+    c_comb: np.ndarray,
+    pixel_res_rad: float,
+    hit_mask_2d: np.ndarray,
+    w_mean: np.ndarray,
+) -> None:
+    w_norm = float(np.hypot(float(w_mean[0]), float(w_mean[1])))
+    if not (np.isfinite(w_norm) and w_norm > 0):
+        return
+
+    KX, KY, ps_co = power.power2d_from_map(map_2d_mk=pre_coadd_all, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+    _, _, ps_re = power.power2d_from_map(map_2d_mk=c_comb, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+
+    ell = np.sqrt(KX * KX + KY * KY)
+    denom = np.maximum(ell * w_norm, 1e-300)
+    cosang = (KX * float(w_mean[0]) + KY * float(w_mean[1])) / denom
+    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS))
+
+    delta = (ps_re - ps_co) * 1e6  # (mK)^2 -> (uK)^2
+    delta = np.where(keep, delta, np.nan)
+
+    disp = (np.abs(KX) <= 500.0) & (np.abs(KY) <= 500.0) & np.isfinite(delta)
+    vals = np.abs(delta[disp])
+    if vals.size == 0:
+        return
+    vmax = float(np.percentile(vals, 99))
+    vmax = max(vmax, 1e-6)
+    vmin = -vmax
+
+    fig, ax = plt.subplots(1, 1, figsize=(4.8, 4.2), dpi=150)
+    cmap = plt.get_cmap("coolwarm").copy()
+    cmap.set_bad(color=(1.0, 1.0, 1.0, 1.0))
+    im = ax.imshow(
+        delta,
+        origin="lower",
+        extent=[float(np.min(KX)), float(np.max(KX)), float(np.min(KY)), float(np.max(KY))],
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        interpolation="none",
+        aspect="equal",
+    )
+    ax.set_title("Non-degenerate Δ power (recon - coadd)", fontsize=10)
+    ax.set_xlabel(r"$\ell_x$ [rad$^{-1}$]")
+    ax.set_ylabel(r"$\ell_y$ [rad$^{-1}$]")
+    ax.set_xlim(-500, 500)
+    ax.set_ylim(-500, 500)
+    cb = fig.colorbar(im, ax=ax, orientation="vertical")
+    cb.set_label(r"$\Delta C_\ell$ [$\mu K_{\rm CMB}^2$]")
+    fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -547,6 +605,15 @@ def main(cfg: Config) -> None:
             extent=extent,
             w_mean=w_mean,
         )
+        if recon_mode == "ml":
+            _plot_nondegenerate_power2d_delta(
+                out_path=out_dir / "power2d_nondegenerate_delta.png",
+                pre_coadd_all=pre_coadd_all,
+                c_comb=c_comb,
+                hit_mask_2d=hit_mask_2d,
+                pixel_res_rad=pixel_res_rad,
+                w_mean=w_mean,
+            )
 
     # 3) per-scan naive coadds
     _plot_map_stack(

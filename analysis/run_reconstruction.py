@@ -255,11 +255,19 @@ def main(cfg: Config) -> None:
     global_to_obs = -np.ones((n_pix,), dtype=np.int64)
     global_to_obs[obs_pix_global] = np.arange(int(obs_pix_global.size), dtype=np.int64)
 
-    prior_cmb = cad.SpectralPriorFFT(
+    # Calculate cos_dec from bbox_cmb center
+    iy_mid = (float(bbox_cmb.iy0) + float(bbox_cmb.iy1)) / 2.0
+    dec_deg = iy_mid * float(pixel_size_deg0)
+    cos_dec = float(np.cos(np.deg2rad(dec_deg)))
+    if cos_dec <= 0.1:
+         cos_dec = 0.1
+
+    prior_cmb = cad.FourierGaussianPrior(
         nx=int(bbox_cmb.nx),
         ny=int(bbox_cmb.ny),
         pixel_res_rad=pixel_res_rad,
         cl_bins_mk2=np.asarray(cl_cmb_bins_mk2, dtype=np.float64),
+        cos_dec=cos_dec,
         cl_floor_mk2=float(cfg.cl_floor_mk2),
     )
 
@@ -275,11 +283,12 @@ def main(cfg: Config) -> None:
             winds_deg_per_s=[(float(winds[i, 0]), float(winds[i, 1]))],
             pixel_size_deg=float(pixel_size_deg0),
         )
-        prior_atm_i = cad.SpectralPriorFFT(
+        prior_atm_i = cad.FourierGaussianPrior(
             nx=int(bbox_atm_i.nx),
             ny=int(bbox_atm_i.ny),
             pixel_res_rad=pixel_res_rad,
             cl_bins_mk2=np.asarray(cl_atm_bins_mk2, dtype=np.float64),
+            cos_dec=cos_dec,
             cl_floor_mk2=float(cfg.cl_floor_mk2),
         )
 

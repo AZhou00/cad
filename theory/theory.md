@@ -91,12 +91,12 @@ b_c = \sum_s P_s^T N_s^{-1} d_s,\qquad
 b_{a_s} = W_s^T N_s^{-1} d_s.
 $$
 
-The multi-scan solve uses Conjugate Gradient with a diagonal preconditioner built from hit-count approximations plus a constant diagonal estimate of $C^{-1}$ from `SpectralPriorFFT.apply_Cinv(e0)[0]`.
+The multi-scan solve uses Conjugate Gradient with a diagonal preconditioner built from hit-count approximations plus a constant diagonal estimate of $C^{-1}$ from `FourierGaussianPrior.apply_Cinv(e0)[0]`.
 
-## Grids, masks, and gauge
+## Grids, masks, and monopole
 
 - **CMB bbox**: tight union bbox over observed pixels across scans (no padding).
 - **Atmosphere bbox**: padded bbox large enough to keep open-boundary bilinear advection in-bounds. The combined solve uses a shared padded bbox; per-scan diagnostic solves may use per-scan padded bboxes.
 - **Observed pixel basis**: for ML we solve for pixels hit at least `min_hits_per_pix` times; for MAP we solve the full bbox grid.
-- **Monopole gauge**: the solution has a near-degeneracy between the mean of $c$ and the mean of $a_s^0$; we fix a gauge by subtracting the mean of the reconstructed $c$ map after solving.
+- **Monopole**: the solution has a near-degeneracy between the mean of $c$ and the mean of $a_s^0$; we fix a subtract the mean of the reconstructed $c$ map after solving.
 

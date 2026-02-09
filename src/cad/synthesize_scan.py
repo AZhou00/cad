@@ -20,7 +20,7 @@ import numpy as np
 import scipy.sparse.linalg as spla
 
 from .map import BBox, bbox_union, scan_bbox_from_pix_index
-from .prior import SpectralPriorFFT
+from .prior import FourierGaussianPrior
 from .util import (
     bbox_pad_for_open_boundary,
     frozen_screen_bilinear_weights,
@@ -145,15 +145,23 @@ def synthesize_scans(
     n_pix_atm = int(nx_a * ny_a)
     pixel_res_rad = float(pixel_size_deg) * np.pi / 180.0
 
+    # Calculate cos_dec from bbox_cmb center
+    iy_mid = (float(bbox_cmb.iy0) + float(bbox_cmb.iy1)) / 2.0
+    dec_deg = iy_mid * float(pixel_size_deg)
+    cos_dec = float(np.cos(np.deg2rad(dec_deg)))
+    if cos_dec <= 0.1:
+         cos_dec = 0.1
+
     cl_atm_bins_mk2 = np.asarray(cl_atm_bins_mk2, dtype=np.float64).reshape(-1)
     if int(cl_atm_bins_mk2.size) <= 0:
         raise ValueError("cl_atm_bins_mk2 must be non-empty.")
     n_ell_bins = int(cl_atm_bins_mk2.size)
-    prior_atm = SpectralPriorFFT(
+    prior_atm = FourierGaussianPrior(
         nx=nx_a,
         ny=ny_a,
         pixel_res_rad=pixel_res_rad,
         cl_bins_mk2=cl_atm_bins_mk2,
+        cos_dec=cos_dec,
         cl_floor_mk2=float(cl_floor_mk2),
     )
 
@@ -172,11 +180,12 @@ def synthesize_scans(
             if cl_cmb_bins_mk2.size != int(n_ell_bins):
                 raise ValueError("cl_cmb_bins_mk2 must have the same length as cl_atm_bins_mk2.")
 
-    prior_cmb = SpectralPriorFFT(
+    prior_cmb = FourierGaussianPrior(
         nx=nx_c,
         ny=ny_c,
         pixel_res_rad=pixel_res_rad,
         cl_bins_mk2=np.asarray(cl_cmb_bins_mk2, dtype=np.float64),
+        cos_dec=cos_dec,
         cl_floor_mk2=float(cl_floor_mk2),
     )
 

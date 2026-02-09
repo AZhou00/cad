@@ -99,8 +99,8 @@ def main() -> None:
     n_ell_bins = 32
     cl_atm = np.full((n_ell_bins,), 10.0, dtype=np.float64)
     cl_cmb = np.full((n_ell_bins,), 1.0, dtype=np.float64)
-    prior_atm = cad.SpectralPriorFFT(nx=nx_a, ny=ny_a, pixel_res_rad=pixel_res_rad, cl_bins_mk2=cl_atm)
-    prior_cmb = cad.SpectralPriorFFT(nx=nx_c, ny=ny_c, pixel_res_rad=pixel_res_rad, cl_bins_mk2=cl_cmb)
+    prior_atm = cad.FourierGaussianPrior(nx=nx_a, ny=ny_a, pixel_res_rad=pixel_res_rad, cl_bins_mk2=cl_atm)
+    prior_cmb = cad.FourierGaussianPrior(nx=nx_c, ny=ny_c, pixel_res_rad=pixel_res_rad, cl_bins_mk2=cl_cmb)
 
     obs_pix = np.arange(n_pix_cmb, dtype=np.int64)
     global_to_obs = np.arange(n_pix_cmb, dtype=np.int64)

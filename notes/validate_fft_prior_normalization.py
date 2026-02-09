@@ -3,7 +3,7 @@
 Sanity checks for the FFT-diagonal prior normalization used in `cad.prior`.
 
 This tests consistency between:
-  - `cad.SpectralPriorFFT.apply_Cinv`
+  - `cad.FourierGaussianPrior.apply_Cinv`
   - `cad.power.radial_cl_1d_from_map`
 """
 
@@ -120,7 +120,7 @@ def main() -> None:
 
     # (1) Constant C_ell: C^{-1} should be scalar * I in pixel space.
     cl0 = 7.0  # mK^2
-    prior_const = cad.SpectralPriorFFT(
+    prior_const = cad.FourierGaussianPrior(
         nx=nx,
         ny=ny,
         pixel_res_rad=pixel_res_rad,
@@ -139,7 +139,7 @@ def main() -> None:
     cl_bins = 50.0 * (1.0 + (ell_centers / 600.0) ** 2) ** (-1.5)
     cl_bins = np.maximum(cl_bins, float(cl_floor_mk2))
 
-    prior = cad.SpectralPriorFFT(
+    prior = cad.FourierGaussianPrior(
         nx=nx,
         ny=ny,
         pixel_res_rad=pixel_res_rad,
