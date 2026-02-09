@@ -149,8 +149,6 @@ def synthesize_scans(
     iy_mid = (float(bbox_cmb.iy0) + float(bbox_cmb.iy1)) / 2.0
     dec_deg = iy_mid * float(pixel_size_deg)
     cos_dec = float(np.cos(np.deg2rad(dec_deg)))
-    if cos_dec <= 0.1:
-         cos_dec = 0.1
 
     cl_atm_bins_mk2 = np.asarray(cl_atm_bins_mk2, dtype=np.float64).reshape(-1)
     if int(cl_atm_bins_mk2.size) <= 0:

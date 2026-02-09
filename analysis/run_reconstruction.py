@@ -259,8 +259,6 @@ def main(cfg: Config) -> None:
     iy_mid = (float(bbox_cmb.iy0) + float(bbox_cmb.iy1)) / 2.0
     dec_deg = iy_mid * float(pixel_size_deg0)
     cos_dec = float(np.cos(np.deg2rad(dec_deg)))
-    if cos_dec <= 0.1:
-         cos_dec = 0.1
 
     prior_cmb = cad.FourierGaussianPrior(
         nx=int(bbox_cmb.nx),

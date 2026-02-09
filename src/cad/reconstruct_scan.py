@@ -296,7 +296,7 @@ def solve_single_scan(
     sol = np.asarray(sol, dtype=np.float64).reshape(-1)
 
     c_act = sol[:n_c].copy()
-    c_act -= float(np.mean(c_act))  # gauge: remove monopole on the solved subspace
+    c_act -= float(np.mean(c_act))  # monopole: remove mean on the solved subspace
 
     c_obs = np.zeros((n_obs,), dtype=np.float64)
     c_obs[idx_c] = c_act

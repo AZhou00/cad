@@ -38,6 +38,18 @@ EPSILON_DEG = 44.75
 KDOTW_EXCLUDE_COS = 0.5  # exclude modes with |cos(angle(k,w_mean))| < this (k ⟂ w)
 
 
+def _exclude_ky_zero_row(KY: np.ndarray) -> np.ndarray:
+    """
+    Exclude the Fourier row closest to ky=0 (remove the ky=0 line).
+    """
+    ky_abs = np.abs(np.asarray(KY, dtype=np.float64))
+    ky_pos = ky_abs[ky_abs > 0.0]
+    if ky_pos.size == 0:
+        return np.ones_like(ky_abs, dtype=bool)
+    ky_min = float(np.min(ky_pos))
+    return ky_abs >= ky_min
+
+
 def _img_from_vec(vec: np.ndarray, *, nx: int, ny: int) -> np.ndarray:
     """
     vec uses pixel_index = iy + ix*ny. Return image (ny,nx) with iy as rows.
@@ -201,7 +213,8 @@ def _plot_nondegenerate_power2d_delta(
     ell = np.sqrt(KX * KX + KY * KY)
     denom = np.maximum(ell * w_norm, 1e-300)
     cosang = (KX * float(w_mean[0]) + KY * float(w_mean[1])) / denom
-    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS))
+    ky_keep = _exclude_ky_zero_row(KY)
+    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS)) & ky_keep
 
     delta = (ps_re - ps_co) * 1e6  # (mK)^2 -> (uK)^2
     delta = np.where(keep, delta, np.nan)
@@ -260,7 +273,8 @@ def _plot_nondegenerate_fourier_and_realspace(
     ell = np.sqrt(KX * KX + KY * KY)
     denom = np.maximum(ell * w_norm, 1e-300)
     cosang = (KX * float(w_mean[0]) + KY * float(w_mean[1])) / denom
-    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS))
+    ky_keep = _exclude_ky_zero_row(KY)
+    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS)) & ky_keep
 
     ps_co_m = np.ma.masked_invalid(np.where(keep, ps_co * 1e6, np.nan))
     ps_re_m = np.ma.masked_invalid(np.where(keep, ps_re * 1e6, np.nan))
@@ -342,7 +356,8 @@ def _plot_nondegenerate_fourier_and_realspace(
     ellf = np.sqrt(KXf * KXf + KYf * KYf)
     denomf = np.maximum(ellf * w_norm, 1e-300)
     cosf = (KXf * float(w_mean[0]) + KYf * float(w_mean[1])) / denomf
-    keepf = np.isfinite(cosf) & (np.abs(cosf) >= float(KDOTW_EXCLUDE_COS))
+    ky_keep_f = _exclude_ky_zero_row(KYf)
+    keepf = np.isfinite(cosf) & (np.abs(cosf) >= float(KDOTW_EXCLUDE_COS)) & ky_keep_f
 
     def _realspace_filtered(m2d: np.ndarray) -> np.ndarray:
         img = np.asarray(m2d, dtype=np.float64)

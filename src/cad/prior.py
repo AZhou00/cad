@@ -72,6 +72,8 @@ class FourierGaussianPrior:
     cl_floor_mk2: float = 1e-12
 
     def __post_init__(self) -> None:
+        if float(self.cos_dec) <= 0.1:
+            raise ValueError("cos_dec is too small near the pole.")
         cl = np.asarray(self.cl_bins_mk2, dtype=np.float64)
         cl = np.where(np.isfinite(cl), cl, 0.0)
         cl = np.maximum(cl, float(self.cl_floor_mk2))
