@@ -59,7 +59,7 @@ def synthesize_scans(
     winds_deg_per_s: list[tuple[float, float]],
     scans_noise_std_det_mk: list[np.ndarray],
     pixel_size_deg: float,
-    cl_atm_bins_mk2: np.ndarray,
+    cl_atm_bins_mk2: np.ndarray | list[np.ndarray],
     cl_cmb_bins_mk2: np.ndarray | None = None,
     estimator_mode: Literal["ML", "MAP"] = "ML",
     cl_floor_mk2: float = 1e-12,
@@ -100,7 +100,9 @@ def synthesize_scans(
       winds_deg_per_s: list of (w_x,w_y) deg/s per scan in the RA/Dec-degree basis.
       scans_noise_std_det_mk: list of (n_det,) per-detector noise std in mK.
       pixel_size_deg: scalar pixel size in degrees (shared across scans).
-      cl_atm_bins_mk2: (n_ell_bins,) atmospheric C_ell bins in mK^2.
+      cl_atm_bins_mk2: atmospheric C_ell bins in mK^2. Can be either:
+        - (n_ell_bins,) shared for all scans, or
+        - list of length n_scans with per-scan arrays.
       cl_cmb_bins_mk2: (n_ell_bins,) CMB C_ell bins in mK^2 (required for MAP; optional for ML).
       estimator_mode: 'ML' or 'MAP'.
       cl_floor_mk2: floor for numerical stability / positivity.
@@ -150,33 +152,47 @@ def synthesize_scans(
     dec_deg = iy_mid * float(pixel_size_deg)
     cos_dec = float(np.cos(np.deg2rad(dec_deg)))
 
-    cl_atm_bins_mk2 = np.asarray(cl_atm_bins_mk2, dtype=np.float64).reshape(-1)
-    if int(cl_atm_bins_mk2.size) <= 0:
-        raise ValueError("cl_atm_bins_mk2 must be non-empty.")
-    n_ell_bins = int(cl_atm_bins_mk2.size)
-    prior_atm = FourierGaussianPrior(
-        nx=nx_a,
-        ny=ny_a,
-        pixel_res_rad=pixel_res_rad,
-        cl_bins_mk2=cl_atm_bins_mk2,
-        cos_dec=cos_dec,
-        cl_floor_mk2=float(cl_floor_mk2),
-    )
+    # Atmosphere prior can be shared or per-scan.
+    if isinstance(cl_atm_bins_mk2, (list, tuple)):
+        if len(cl_atm_bins_mk2) != int(n_scans):
+            raise ValueError("Per-scan cl_atm_bins_mk2 must have length n_scans.")
+        cl_atm_list = [np.asarray(cl, dtype=np.float64).reshape(-1) for cl in cl_atm_bins_mk2]
+    else:
+        cl_atm_arr = np.asarray(cl_atm_bins_mk2, dtype=np.float64)
+        if cl_atm_arr.ndim == 2 and int(cl_atm_arr.shape[0]) == int(n_scans):
+            cl_atm_list = [np.asarray(cl_atm_arr[i], dtype=np.float64).reshape(-1) for i in range(int(n_scans))]
+        else:
+            cl_atm_vec = cl_atm_arr.reshape(-1)
+            cl_atm_list = [cl_atm_vec for _ in range(int(n_scans))]
+    if any(int(cl.size) <= 0 for cl in cl_atm_list):
+        raise ValueError("cl_atm_bins_mk2 entries must be non-empty.")
+    n_ell_bins = int(cl_atm_list[0].size)
+    prior_atm_list = [
+        FourierGaussianPrior(
+            nx=nx_a,
+            ny=ny_a,
+            pixel_res_rad=pixel_res_rad,
+            cl_bins_mk2=np.asarray(cl_atm_list[i], dtype=np.float64),
+            cos_dec=cos_dec,
+            cl_floor_mk2=float(cl_floor_mk2),
+        )
+        for i in range(int(n_scans))
+    ]
 
     if mode == "MAP":
         if cl_cmb_bins_mk2 is None:
             raise ValueError("MAP requires cl_cmb_bins_mk2.")
         cl_cmb_bins_mk2 = np.asarray(cl_cmb_bins_mk2, dtype=np.float64).reshape(-1)
-        if cl_cmb_bins_mk2.size != int(n_ell_bins):
-            raise ValueError("cl_cmb_bins_mk2 must have the same length as cl_atm_bins_mk2.")
+        if int(cl_cmb_bins_mk2.size) <= 0:
+            raise ValueError("cl_cmb_bins_mk2 must be non-empty.")
     else:
         # ML does not apply the CMB prior in the objective, but we still build a placeholder prior for symmetry.
         if cl_cmb_bins_mk2 is None:
             cl_cmb_bins_mk2 = np.full((int(n_ell_bins),), float(cl_floor_mk2), dtype=np.float64)
         else:
             cl_cmb_bins_mk2 = np.asarray(cl_cmb_bins_mk2, dtype=np.float64).reshape(-1)
-            if cl_cmb_bins_mk2.size != int(n_ell_bins):
-                raise ValueError("cl_cmb_bins_mk2 must have the same length as cl_atm_bins_mk2.")
+            if int(cl_cmb_bins_mk2.size) <= 0:
+                raise ValueError("cl_cmb_bins_mk2 must be non-empty.")
 
     prior_cmb = FourierGaussianPrior(
         nx=nx_c,
@@ -214,10 +230,11 @@ def synthesize_scans(
     idx4_list: list[np.ndarray] = []
     w4_list: list[np.ndarray] = []
     inv_var_list: list[np.ndarray] = []
-    rhs_c_list: list[np.ndarray] = []
-    rhs_a_list: list[np.ndarray] = []
+    rhs_c = np.zeros((n_obs,), dtype=np.float64)
+    rhs_a_all = np.zeros((n_scans * n_pix_atm,), dtype=np.float64)
+    global_to_obs_arr = np.asarray(global_to_obs_cmb, dtype=np.int64)
 
-    for tod_mk, pix_index, t_s, wind, noise_std_det, pm0, vm0 in zip(
+    for si, (tod_mk, pix_index, t_s, wind, noise_std_det, pm0, vm0) in enumerate(zip(
         scans_tod_mk,
         scans_pix_index,
         scans_t_s,
@@ -226,21 +243,21 @@ def synthesize_scans(
         pointing_mats,
         valid_masks,
         strict=True,
-    ):
+    )):
         pm = np.asarray(pm0, dtype=np.int64)
         vm = np.asarray(vm0, dtype=bool)
 
         # Drop samples outside the shared obs set.
         valid_pix = pm[vm].astype(np.int64, copy=False)
-        pix_obs_local_all = np.asarray(global_to_obs_cmb, dtype=np.int64)[valid_pix]
+        pix_obs_local_all = global_to_obs_arr[valid_pix]
         keep = pix_obs_local_all >= 0
         if not bool(np.all(keep)):
             vm2 = vm.copy()
             vm2[vm] = keep
             vm = vm2
             valid_pix = pm[vm].astype(np.int64, copy=False)
-            pix_obs_local_all = np.asarray(global_to_obs_cmb, dtype=np.int64)[valid_pix]
-        pix_obs_local = pix_obs_local_all.astype(np.int64, copy=False)  # (n_valid,)
+            pix_obs_local_all = global_to_obs_arr[valid_pix]
+        pix_obs_local = pix_obs_local_all.astype(np.int32, copy=False)  # (n_valid,)
 
         # Sample weights.
         tod_mk = np.asarray(tod_mk)
@@ -270,33 +287,41 @@ def synthesize_scans(
             pixel_size_deg=float(pixel_size_deg),
             strict=True,
         )
+        idx4 = np.asarray(idx4, dtype=np.int32)
+        w4 = np.asarray(w4, dtype=np.float64)
 
         # RHS blocks.
-        rhs_c = np.bincount(pix_obs_local, weights=ninv_d, minlength=n_obs).astype(np.float64, copy=False)  # (n_obs,)
-        rhs_a = np.zeros((n_pix_atm,), dtype=np.float64)
-        np.add.at(rhs_a, idx4.reshape(-1), (w4 * ninv_d[:, None]).reshape(-1))
+        rhs_c += np.bincount(pix_obs_local, weights=ninv_d, minlength=n_obs).astype(np.float64, copy=False)  # (n_obs,)
+        rhs_a = np.bincount(
+            idx4.reshape(-1),
+            weights=(w4 * ninv_d[:, None]).reshape(-1),
+            minlength=n_pix_atm,
+        ).astype(np.float64, copy=False)
+        a0 = int(si * n_pix_atm)
+        a1 = int(a0 + n_pix_atm)
+        rhs_a_all[a0:a1] = rhs_a
 
         pix_obs_locals.append(pix_obs_local)
         idx4_list.append(idx4)
         w4_list.append(w4)
         inv_var_list.append(inv_var)
-        rhs_c_list.append(rhs_c)
-        rhs_a_list.append(rhs_a)
 
     # Combined RHS.
-    rhs_c = np.sum(rhs_c_list, axis=0)
-    rhs_a = np.concatenate(rhs_a_list, axis=0)  # (n_scans*n_pix_atm,)
+    rhs_a = rhs_a_all
     rhs = np.concatenate([rhs_c, rhs_a], axis=0)
 
     # Preconditioner diagonals.
     diag_c = np.zeros((n_obs,), dtype=np.float64)
-    diag_a_blocks: list[np.ndarray] = []
+    diag_a = np.empty((n_scans * n_pix_atm,), dtype=np.float64)
 
     e0_atm = np.zeros((n_pix_atm,), dtype=np.float64)
     e0_atm[0] = 1.0
-    diag_Ca_inv = float(prior_atm.apply_Cinv(e0_atm)[0])
-    if not np.isfinite(diag_Ca_inv) or diag_Ca_inv <= 0:
-        raise ValueError("Non-positive diagonal estimate for C_a^{-1}.")
+    diag_Ca_inv_list: list[float] = []
+    for prior_atm in prior_atm_list:
+        diag_Ca_inv = float(prior_atm.apply_Cinv(e0_atm)[0])
+        if not np.isfinite(diag_Ca_inv) or diag_Ca_inv <= 0:
+            raise ValueError("Non-positive diagonal estimate for C_a^{-1}.")
+        diag_Ca_inv_list.append(diag_Ca_inv)
 
     diag_Cc_inv = 0.0
     if mode == "MAP":
@@ -304,14 +329,16 @@ def synthesize_scans(
         e0_cmb[0] = 1.0
         diag_Cc_inv = float(prior_cmb.apply_Cinv(e0_cmb)[0])
 
-    for pix_obs_local, idx4, w4, inv_var in zip(pix_obs_locals, idx4_list, w4_list, inv_var_list, strict=True):
+    for si, (pix_obs_local, idx4, w4, inv_var) in enumerate(zip(pix_obs_locals, idx4_list, w4_list, inv_var_list, strict=True)):
         diag_c += np.bincount(pix_obs_local, weights=inv_var, minlength=n_obs).astype(np.float64, copy=False)
         diag_WtNW = np.bincount(
             idx4.reshape(-1),
             weights=(w4 * w4 * inv_var[:, None]).reshape(-1),
             minlength=n_pix_atm,
         ).astype(np.float64, copy=False)
-        diag_a_blocks.append(np.maximum(diag_WtNW + diag_Ca_inv, float(cl_floor_mk2)))
+        a0 = int(si * n_pix_atm)
+        a1 = int(a0 + n_pix_atm)
+        diag_a[a0:a1] = np.maximum(diag_WtNW + float(diag_Ca_inv_list[si]), float(cl_floor_mk2))
 
     if mode == "MAP":
         if n_obs != n_pix_cmb:
@@ -320,7 +347,6 @@ def synthesize_scans(
             diag_c = diag_c + diag_Cc_inv
 
     diag_c = np.maximum(diag_c, float(cl_floor_mk2))
-    diag_a = np.concatenate(diag_a_blocks, axis=0)
 
     # Combined operator A * [c; a0_1; ...; a0_S].
     def A_matvec(x: np.ndarray) -> np.ndarray:
@@ -332,7 +358,7 @@ def synthesize_scans(
         a_blocks = a_all.reshape(n_scans, n_pix_atm)  # (n_scans, n_pix_atm)
 
         out_c = np.zeros((n_obs,), dtype=np.float64)  # (n_obs,)
-        out_a_blocks: list[np.ndarray] = []
+        out_a_all = np.empty((n_scans * n_pix_atm,), dtype=np.float64)
 
         for si in range(n_scans):
             pix_obs_local = pix_obs_locals[si]
@@ -347,15 +373,20 @@ def synthesize_scans(
 
             out_c += np.bincount(pix_obs_local, weights=u, minlength=n_obs).astype(np.float64, copy=False)  # (n_obs,) += P_s^T u
 
-            out_a = np.zeros((n_pix_atm,), dtype=np.float64)
-            np.add.at(out_a, idx4.reshape(-1), (w4 * u[:, None]).reshape(-1))
-            out_a = out_a + prior_atm.apply_Cinv(a0)  # (n_pix_atm,) = W_s^T u + Ca^{-1} a0
-            out_a_blocks.append(out_a)
+            out_a = np.bincount(
+                idx4.reshape(-1),
+                weights=(w4 * u[:, None]).reshape(-1),
+                minlength=n_pix_atm,
+            ).astype(np.float64, copy=False)
+            out_a = out_a + prior_atm_list[si].apply_Cinv(a0)  # (n_pix_atm,) = W_s^T u + Ca^{-1} a0
+            a0i = int(si * n_pix_atm)
+            a1i = int(a0i + n_pix_atm)
+            out_a_all[a0i:a1i] = out_a
 
         if mode == "MAP":
             out_c = out_c + prior_cmb.apply_Cinv(c)  # (n_obs,) += Cc^{-1} c
 
-        return np.concatenate([out_c, np.concatenate(out_a_blocks, axis=0)], axis=0)
+        return np.concatenate([out_c, out_a_all], axis=0)
 
     A_op = spla.LinearOperator((n_obs + n_scans * n_pix_atm, n_obs + n_scans * n_pix_atm), matvec=A_matvec, dtype=np.float64)
 

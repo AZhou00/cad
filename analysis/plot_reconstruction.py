@@ -5,11 +5,13 @@ Concise plotting for the current multi-field layout.
 Assumptions (no backward compatibility):
   - input scans:
       cad/data/<dataset>/<obs_id>/binned_tod_*/<scan>.npz
-  - recon outputs (single-scan only):
+  - per-scan recon outputs:
       cad/data/<dataset>_recon/<obs_id>/recon_scan###_<ml|map>.npz
+  - combined recon outputs:
+      cad/data/<dataset>_recon/recon_<ml|map>.npz
 
-This script makes dataset-level plots by combining *all* obs IDs under the
-dataset directory, using the *single-scan* recon maps (not recon_combined).
+This script makes dataset-level plots by loading the precomputed combined
+reconstruction (`recon_<ml|map>.npz`) and comparing it to naive coadd maps.
 
 Outputs:
   cad/data/<dataset>_recon/plots/
@@ -298,9 +300,11 @@ def _plot_nondegenerate(
     )
 
 
-def _discover_obs_ids(dataset_dir: pathlib.Path) -> list[str]:
-    obs = sorted([p.name for p in dataset_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d+", p.name)])
-    return [str(x) for x in obs]
+def _discover_obs_entries(dataset_dir: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
+    obs_dirs = sorted([p for p in dataset_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d+", p.name)], key=lambda p: p.name)
+    if obs_dirs:
+        return [(str(p.name), p) for p in obs_dirs]
+    return [(str(dataset_dir.name), dataset_dir)]
 
 
 def _discover_scan_paths(*, obs_dir: pathlib.Path) -> list[pathlib.Path]:
@@ -318,25 +322,6 @@ def _discover_scan_paths(*, obs_dir: pathlib.Path) -> list[pathlib.Path]:
     return scan_paths
 
 
-def _discover_scan_items(
-    *,
-    dataset_dir: pathlib.Path,
-    recon_root: pathlib.Path,
-    recon_mode: str,
-) -> list[tuple[str, int, pathlib.Path, pathlib.Path]]:
-    """
-    Return (obs_id, scan_idx, scan_path, recon_path) for scans that have single-scan recon outputs.
-    """
-    items = []
-    for obs_id in _discover_obs_ids(dataset_dir):
-        scan_paths = _discover_scan_paths(obs_dir=dataset_dir / obs_id)
-        for i, scan_path in enumerate(scan_paths):
-            recon_path = recon_root / obs_id / f"recon_scan{i:03d}_{recon_mode}.npz"
-            if recon_path.exists():
-                items.append((str(obs_id), int(i), scan_path, recon_path))
-    return items
-
-
 def _suffix(mode: str) -> str:
     return f"_{str(mode).lower()}"
 
@@ -346,81 +331,59 @@ def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_di
     if recon_mode not in ("ml", "map"):
         raise ValueError("RECON_MODE must be 'ml' or 'map'.")
 
-    scan_items = _discover_scan_items(dataset_dir=dataset_dir, recon_root=recon_root, recon_mode=recon_mode)
-    if len(scan_items) == 0:
-        raise RuntimeError(f"No single-scan recon files found under {recon_root} for mode={recon_mode}.")
+    combined_path = recon_root / f"recon_{recon_mode}.npz"
+    if not combined_path.exists():
+        raise RuntimeError(
+            f"Combined reconstruction not found: {combined_path}. "
+            "Run run_synthesis.py first."
+        )
 
-    # Global bbox from recon scan bboxes.
-    bboxes = []
-    pix_deg0 = None
-    winds = []
-    for _obs_id, _scan_i, _scan_path, recon_path in scan_items:
-        r = np.load(recon_path, allow_pickle=False)
-        rx0 = int(r["bbox_ix0"])
-        ry0 = int(r["bbox_iy0"])
-        rnx = int(r["nx"])
-        rny = int(r["ny"])
-        bboxes.append(map_util.BBox(ix0=rx0, ix1=rx0 + rnx - 1, iy0=ry0, iy1=ry0 + rny - 1))
-        pix_deg = float(r["pixel_size_deg"])
-        pix_deg0 = pix_deg if pix_deg0 is None else pix_deg0
-        if abs(float(pix_deg) - float(pix_deg0)) > 1e-12:
-            r.close()
-            raise RuntimeError("pixel_size_deg differs across scans; cannot combine.")
-        w = np.asarray(r["wind_deg_per_s"], dtype=np.float64).reshape(-1) if "wind_deg_per_s" in r.files else None
-        if w is not None and w.size >= 2 and np.all(np.isfinite(w[:2])):
-            winds.append(w[:2])
-        r.close()
+    with np.load(combined_path, allow_pickle=False) as rc:
+        bbox_ix0 = int(rc["bbox_ix0"])
+        bbox_iy0 = int(rc["bbox_iy0"])
+        nx = int(rc["nx"])
+        ny = int(rc["ny"])
+        pixel_size_deg = float(rc["pixel_size_deg"])
+        rec_full = _img_from_vec(np.asarray(rc["c_hat_full_mk"], dtype=np.float64), nx=nx, ny=ny)
+        winds_arr = np.asarray(rc["winds_deg_per_s"], dtype=np.float64) if "winds_deg_per_s" in rc.files else np.empty((0, 2), dtype=np.float64)
 
-    bbox = map_util.bbox_union(bboxes)
-    pixel_size_deg = float(pix_deg0)
+    bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
     extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
     pixel_res_rad = float(pixel_size_deg) * np.pi / 180.0
 
-    # Streaming accumulation over all scan samples.
+    # Streaming naive coadd accumulation over all scan samples.
     s_naive = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
     c_naive = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
-    s_rec = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
-    c_rec = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
+    scan_paths = []
+    for _obs_id, obs_dir in _discover_obs_entries(dataset_dir):
+        scan_paths.extend(_discover_scan_paths(obs_dir=obs_dir))
 
-    for _obs_id, _scan_i, scan_path, recon_path in scan_items:
-        z = np.load(scan_path, allow_pickle=False)
-        eff_tod_mk = np.asarray(z["eff_tod_mk"])
-        pix_index = np.asarray(z["pix_index"], dtype=np.int64)
+    if len(scan_paths) == 0:
+        raise RuntimeError(f"No scan NPZ files found under {dataset_dir}.")
+
+    for scan_path in scan_paths:
+        with np.load(scan_path, allow_pickle=False) as z:
+            eff_tod_mk = np.asarray(z["eff_tod_mk"])
+            pix_index = np.asarray(z["pix_index"], dtype=np.int64)
         ok = np.isfinite(eff_tod_mk)
         if not bool(np.any(ok)):
-            z.close()
             continue
         ij = pix_index[ok]  # (n_hit, 2) global (ix,iy)
         ixg = ij[:, 0] - int(bbox.ix0)
         iyg = ij[:, 1] - int(bbox.iy0)
-        v = eff_tod_mk[ok].astype(np.float64, copy=False)
-        np.add.at(s_naive, (iyg, ixg), v)
-        np.add.at(c_naive, (iyg, ixg), 1)
-        z.close()
-
-        r = np.load(recon_path, allow_pickle=False)
-        rx0 = int(r["bbox_ix0"])
-        ry0 = int(r["bbox_iy0"])
-        rnx = int(r["nx"])
-        rny = int(r["ny"])
-        rimg = _img_from_vec(np.asarray(r["c_hat_full_mk"]), nx=rnx, ny=rny)
-        r.close()
-
-        ixr = ij[:, 0] - rx0
-        iyr = ij[:, 1] - ry0
-        m_in = (ixr >= 0) & (ixr < rnx) & (iyr >= 0) & (iyr < rny)
-        if bool(np.any(m_in)):
-            rv = rimg[iyr[m_in], ixr[m_in]].astype(np.float64, copy=False)
-            np.add.at(s_rec, (iyg[m_in], ixg[m_in]), rv)
-            np.add.at(c_rec, (iyg[m_in], ixg[m_in]), 1)
+        in_box = (ixg >= 0) & (ixg < int(bbox.nx)) & (iyg >= 0) & (iyg < int(bbox.ny))
+        if not bool(np.any(in_box)):
+            continue
+        v = eff_tod_mk[ok].astype(np.float64, copy=False)[in_box]
+        np.add.at(s_naive, (iyg[in_box], ixg[in_box]), v)
+        np.add.at(c_naive, (iyg[in_box], ixg[in_box]), 1)
 
     naive = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
     hit_mask = c_naive > 0
     naive[hit_mask] = (s_naive[hit_mask] / c_naive[hit_mask]).astype(np.float32)
 
-    rec = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
-    hit_mask_rec = c_rec > 0
-    rec[hit_mask_rec] = (s_rec[hit_mask_rec] / c_rec[hit_mask_rec]).astype(np.float32)
+    # For direct map comparisons, mask combined map to data-supported naive hit mask.
+    rec = np.where(hit_mask, np.asarray(rec_full, dtype=np.float64), np.nan).astype(np.float32, copy=False)
 
     suf = _suffix(recon_mode)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -429,7 +392,7 @@ def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_di
     _plot_map_stack(
         out_path=out_dir / f"maps_coadd_vs_reconcoadd{suf}.png",
         imgs=[naive, rec],
-        titles=["Naive coadd (all scans) [mK]", f"Recon coadd (all single-scan recons) [{recon_mode.upper()}] [mK]"],
+        titles=["Naive coadd (all scans) [mK]", f"Recon combined (loaded recon_{recon_mode}.npz) [{recon_mode.upper()}] [mK]"],
         extent=extent,
         vmin=vmin,
         vmax=vmax,
@@ -437,7 +400,7 @@ def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_di
 
     _plot_power2d_comparison(
         out_path=out_dir / f"maps_coadd_vs_reconcoadd_power2d{suf}.png",
-        maps_2d_mk=[("Naive coadd", naive), (f"Recon coadd ({recon_mode})", rec)],
+        maps_2d_mk=[("Naive coadd", naive), (f"Recon combined ({recon_mode})", rec)],
         pixel_res_rad=pixel_res_rad,
         hit_mask_2d=hit_mask,
     )
@@ -446,7 +409,7 @@ def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_di
     _, cl_rec = power.radial_cl_1d_from_map(map_2d_mk=rec, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=int(N_ELL_BINS))
     fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
     ax.plot(ell, cl_naive, color="k", lw=2.0, label="naive coadd")
-    ax.plot(ell, cl_rec, color="C3", lw=2.5, label=f"recon coadd ({recon_mode})")
+    ax.plot(ell, cl_rec, color="C3", lw=2.5, label=f"recon combined ({recon_mode})")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel(r"$\ell$")
@@ -457,8 +420,8 @@ def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_di
     fig.savefig(out_dir / f"cl{suf}.png", bbox_inches="tight")
     plt.close(fig)
 
-    if len(winds) > 0:
-        w_mean = np.mean(np.asarray(winds, dtype=np.float64), axis=0)
+    if winds_arr.ndim == 2 and winds_arr.shape[1] >= 2 and int(winds_arr.shape[0]) > 0:
+        w_mean = np.mean(np.asarray(winds_arr[:, :2], dtype=np.float64), axis=0)
         _plot_nondegenerate(
             out_dir=out_dir,
             suffix=suf,
@@ -476,7 +439,9 @@ def _plot_obs_scan_stacks(*, obs_id: str, scan_paths: list[pathlib.Path], recon_
     if recon_mode not in ("ml", "map"):
         raise ValueError("mode must be 'ml' or 'map'.")
 
-    recon_paths = [recon_dir / f"recon_scan{i:03d}_{recon_mode}.npz" for i in range(len(scan_paths))]
+    n_show = min(int(len(scan_paths)), int(TOP_OBS_SCAN_STACKS))
+    scan_paths_show = list(scan_paths[:n_show])
+    recon_paths = [recon_dir / f"recon_scan{i:03d}_{recon_mode}.npz" for i in range(n_show)]
     if any([not p.exists() for p in recon_paths]):
         return
 
@@ -492,7 +457,7 @@ def _plot_obs_scan_stacks(*, obs_id: str, scan_paths: list[pathlib.Path], recon_
     bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
     extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
 
-    scans = [np.load(p, allow_pickle=False) for p in scan_paths]
+    scans = [np.load(p, allow_pickle=False) for p in scan_paths_show]
     recons = [np.load(p, allow_pickle=False) for p in recon_paths]
 
     pre_maps = []
@@ -556,15 +521,15 @@ def main(*, dataset: str) -> None:
         raise RuntimeError(f"Dataset directory does not exist: {dataset_dir}")
     recon_root = dataset_dir.parent / f"{dataset_dir.name}_recon"
     if not recon_root.exists():
-        raise RuntimeError(f"Recon directory does not exist: {recon_root} (run run_reconstruction.py first)")
+        raise RuntimeError(f"Recon directory does not exist: {recon_root} (run run_reconstruction.py and run_synthesis.py first)")
 
     out_dir = recon_root / "plots"
     _plot_dataset(dataset_dir=dataset_dir, recon_root=recon_root, out_dir=out_dir, recon_mode=mode)
 
     # Per-obs scan stacks (top-N by number of scan files).
     rows = []
-    for obs_id in _discover_obs_ids(dataset_dir):
-        scan_paths = _discover_scan_paths(obs_dir=dataset_dir / obs_id)
+    for obs_id, obs_dir in _discover_obs_entries(dataset_dir):
+        scan_paths = _discover_scan_paths(obs_dir=obs_dir)
         if len(scan_paths) == 0:
             continue
         rows.append((int(len(scan_paths)), str(obs_id), scan_paths))
