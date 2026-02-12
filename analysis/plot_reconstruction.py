@@ -1,62 +1,54 @@
 #!/usr/bin/env python3
 """
-Plot diagnostics for SPT binned-TOD reconstructions.
+Concise plotting for the current multi-field layout.
 
-Inputs:
-  - `cad/data/<dataset>/<obs_id>/binned_tod_*/<scan>.npz`
-  - recon outputs under `cad/data/<dataset>_recon/<obs_id>/`
+Assumptions (no backward compatibility):
+  - input scans:
+      cad/data/<dataset>/<obs_id>/binned_tod_*/<scan>.npz
+  - recon outputs (single-scan only):
+      cad/data/<dataset>_recon/<obs_id>/recon_scan###_<ml|map>.npz
+
+This script makes dataset-level plots by combining *all* obs IDs under the
+dataset directory, using the *single-scan* recon maps (not recon_combined).
 
 Outputs:
-  - dataset-level plots under `cad/data/<dataset>_recon/plots/` (combines all obs IDs)
-  - optional per-obs scan-stack plots under the same folder (prefixed with obs_id)
+  cad/data/<dataset>_recon/plots/
 
-This script is loader-style (it reads the NPZs) and keeps the util modules
-loader-free.
+Naming conventions:
+  - every file ends with _ml or _map
+  - per-obs scan stacks use <obs_id>_ as a prefix
 """
 
 from __future__ import annotations
 
 import pathlib
 import re
-from dataclasses import dataclass
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib import colors
-
-THIS_DIR = pathlib.Path(__file__).resolve().parent
 
 from cad import map as map_util
 from cad import power
 
+# -----------------------------------------------------------------------------
+# Edit here (single knob)
+# -----------------------------------------------------------------------------
+
+RECON_MODE = "ml"  # "ml" or "map"
 
 # -----------------------------------------------------------------------------
-# Defaults (edit here)
+# Internal defaults
 # -----------------------------------------------------------------------------
-
-CAD_DIR = THIS_DIR.parent
-DATA_DIR = CAD_DIR / "data"
-PREFER_BINNED_SUBDIR = "binned_tod_10arcmin"
-TOP_FIELDS_MAP_STACK = 5
-TOP_FIELDS_FOCAL_PLANE = 4
-TOP_FIELDS_PEROBS_SUMMARY = 0  # set >0 to also write per-obs "coadd vs combined" summaries
 
 N_ELL_BINS = 128
-NU_GHZ = 220.0
-EPSILON_DEG = 44.75
-KDOTW_EXCLUDE_COS = 0.5  # exclude modes with |cos(angle(k,w_mean))| < this (k ⟂ w)
+KDOTW_EXCLUDE_COS = 0.5  # keep modes with |cos(angle(k,w_mean))| >= this
+PREFER_BINNED_SUBDIR = "binned_tod_10arcmin"
+TOP_OBS_SCAN_STACKS = 5
 
-
-def _exclude_ky_zero_row(KY: np.ndarray) -> np.ndarray:
-    """
-    Exclude the Fourier row closest to ky=0 (remove the ky=0 line).
-    """
-    ky_abs = np.abs(np.asarray(KY, dtype=np.float64))
-    ky_pos = ky_abs[ky_abs > 0.0]
-    if ky_pos.size == 0:
-        return np.ones_like(ky_abs, dtype=bool)
-    ky_min = float(np.min(ky_pos))
-    return ky_abs >= ky_min
+THIS_DIR = pathlib.Path(__file__).resolve().parent
+CAD_DIR = THIS_DIR.parent
+DATA_DIR = CAD_DIR / "data"
 
 
 def _img_from_vec(vec: np.ndarray, *, nx: int, ny: int) -> np.ndarray:
@@ -67,19 +59,27 @@ def _img_from_vec(vec: np.ndarray, *, nx: int, ny: int) -> np.ndarray:
     return v.T  # (ny,nx)
 
 
-def _extent_deg(*, bbox_ix0: int, bbox_iy0: int, nx: int, ny: int, pixel_size_deg: float) -> list[float]:
-    x0 = float(bbox_ix0) * float(pixel_size_deg)
-    x1 = float(bbox_ix0 + nx) * float(pixel_size_deg)
-    y0 = float(bbox_iy0) * float(pixel_size_deg)
-    y1 = float(bbox_iy0 + ny) * float(pixel_size_deg)
+def _extent_deg(*, bbox: map_util.BBox, pixel_size_deg: float) -> list[float]:
+    x0 = float(bbox.ix0) * float(pixel_size_deg)
+    x1 = float(bbox.ix0 + bbox.nx) * float(pixel_size_deg)
+    y0 = float(bbox.iy0) * float(pixel_size_deg)
+    y1 = float(bbox.iy0 + bbox.ny) * float(pixel_size_deg)
     return [x0, x1, y0, y1]
+
+
+def _robust_vmin_vmax(x: np.ndarray, *, p_lo: float = 2.0, p_hi: float = 98.0, default=(-1.0, 1.0)) -> tuple[float, float]:
+    v = np.asarray(x, dtype=np.float64).ravel()
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return float(default[0]), float(default[1])
+    lo, hi = np.percentile(v, [float(p_lo), float(p_hi)])
+    return float(lo), float(hi)
 
 
 def _imshow(ax, img, *, extent, title: str, vmin=None, vmax=None, cmap="RdBu_r"):
     img = np.ma.masked_invalid(np.asarray(img))
     cm = plt.get_cmap(cmap).copy()
-    # Render NaNs (unhit pixels) as solid white.
-    cm.set_bad(color=(1.0, 1.0, 1.0, 1.0))
+    cm.set_bad(color=(1.0, 1.0, 1.0, 1.0))  # NaNs as white
     ax.set_facecolor("white")
     im = ax.imshow(
         img,
@@ -97,15 +97,6 @@ def _imshow(ax, img, *, extent, title: str, vmin=None, vmax=None, cmap="RdBu_r")
     return im
 
 
-def _robust_vmin_vmax(x: np.ndarray, *, p_lo: float = 2.0, p_hi: float = 98.0, default=(-1.0, 1.0)) -> tuple[float, float]:
-    v = np.asarray(x, dtype=np.float64).ravel()
-    v = v[np.isfinite(v)]
-    if v.size == 0:
-        return float(default[0]), float(default[1])
-    lo, hi = np.percentile(v, [float(p_lo), float(p_hi)])
-    return float(lo), float(hi)
-
-
 def _plot_map_stack(
     *,
     out_path: pathlib.Path,
@@ -119,8 +110,6 @@ def _plot_map_stack(
     n = int(len(imgs))
     if n == 0:
         return
-    if len(titles) != n:
-        raise ValueError("titles must match imgs.")
     fig, axs = plt.subplots(n, 1, figsize=(9.0, 2.3 * n), dpi=150, sharex=True, sharey=True)
     if n == 1:
         axs = [axs]
@@ -128,146 +117,90 @@ def _plot_map_stack(
     for i in range(n):
         im = _imshow(axs[i], imgs[i], extent=extent, title=titles[i], vmin=vmin, vmax=vmax)
         ims.append(im)
-        if i < n - 1:
-            axs[i].set_xlabel("")
-    fig.subplots_adjust(right=0.86, hspace=0.28)
-    cax = fig.add_axes([0.88, 0.12, 0.03, 0.76])
-    fig.colorbar(ims[-1], cax=cax, label=str(cbar_label))
+    fig.subplots_adjust(right=0.86, hspace=0.25)
+    pos = axs[-1].get_position()
+    cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
+    cb = fig.colorbar(ims[-1], cax=cax, orientation="vertical")
+    cb.set_label(cbar_label)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
+
 
 def _plot_power2d_comparison(
     *,
     out_path: pathlib.Path,
     maps_2d_mk: list[tuple[str, np.ndarray]],
     pixel_res_rad: float,
-    hit_mask_2d: np.ndarray | None,
+    hit_mask_2d: np.ndarray,
 ) -> None:
-    # Compute 2D power maps (cropped to tight bbox of hit mask).
-    KX0, KY0, _ = power.power2d_from_map(
-        map_2d_mk=maps_2d_mk[0][1],
-        pixel_res_rad=pixel_res_rad,
-        hit_mask_2d=hit_mask_2d,
-        crop_to_hit_mask=True,
-    )
-    ps_list = []
-    for _lab, m in maps_2d_mk:
-        KX, KY, ps = power.power2d_from_map(
-            map_2d_mk=m,
-            pixel_res_rad=pixel_res_rad,
-            hit_mask_2d=hit_mask_2d,
-            crop_to_hit_mask=True,
-        )
-        if KX.shape != KX0.shape or KY.shape != KY0.shape:
-            raise RuntimeError("Internal error: power2d grids do not match.")
-        ps_list.append(ps * 1e6)  # (mK)^2 -> (uK)^2 for display
-
-    vmax = float(np.max([float(np.max(ps)) for ps in ps_list]))
-    vmin = max(vmax * 1e-3, 1e-30)
-    norm = colors.LogNorm(vmin=vmin, vmax=vmax)
-    levels = np.logspace(np.log10(vmin), np.log10(vmax), 30)
-
+    if len(maps_2d_mk) == 0:
+        return
     n_pan = int(len(maps_2d_mk))
     fig, axes = plt.subplots(1, n_pan, figsize=(4.8 * n_pan, 4.2), sharex=True, sharey=True, dpi=150)
     if n_pan == 1:
         axes = [axes]
-    fig.subplots_adjust(wspace=0.22, right=0.86)
 
+    # Shared color range from displayed pixels.
+    vmin, vmax = None, None
+    for _name, m2d in maps_2d_mk:
+        KX, KY, ps2d = power.power2d_from_map(map_2d_mk=m2d, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+        ps2d = np.ma.masked_invalid(ps2d * 1e6)  # (mK)^2 -> (uK)^2
+        disp = (np.abs(KX) <= 500.0) & (np.abs(KY) <= 500.0)
+        vals = ps2d[disp].compressed()
+        if vals.size == 0:
+            continue
+        vmax_i = float(np.max(vals))
+        vmin_i = max(vmax_i * 1e-5, 1e-30)
+        vmax = vmax_i if vmax is None else max(vmax, vmax_i)
+        vmin = vmin_i if vmin is None else min(vmin, vmin_i)
+    if vmin is None or vmax is None:
+        return
+
+    norm = colors.LogNorm(vmin=float(vmin), vmax=float(vmax))
+    levels = np.logspace(np.log10(float(vmin)), np.log10(float(vmax)), 30)
     cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color=(1.0, 1.0, 1.0, 1.0))
     cmap.set_under(cmap(0.0))
 
     last_cf = None
-    for i, (label, _m) in enumerate(maps_2d_mk):
-        ax = axes[i]
-        cf = ax.contourf(KX0, KY0, ps_list[i], levels=levels, cmap=cmap, norm=norm, extend="min")
-        last_cf = cf
-        ax.set_title(str(label), fontsize=10)
+    for ax, (name, m2d) in zip(axes, maps_2d_mk, strict=True):
+        KX, KY, ps2d = power.power2d_from_map(map_2d_mk=m2d, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+        ps2d = np.ma.masked_invalid(ps2d * 1e6)
+        last_cf = ax.contourf(KX, KY, ps2d, levels=levels, cmap=cmap, norm=norm, extend="min")
+        ax.set_title(name, fontsize=10)
         ax.set_xlabel(r"$\ell_x$ [rad$^{-1}$]")
-        if i == 0:
-            ax.set_ylabel(r"$\ell_y$ [rad$^{-1}$]")
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlim(-500, 500)
         ax.set_ylim(-500, 500)
+    axes[0].set_ylabel(r"$\ell_y$ [rad$^{-1}$]")
 
-    if last_cf is not None:
-        pan = axes[min(1, n_pan - 1)]
-        pos = pan.get_position()
-        cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
-        cb = fig.colorbar(last_cf, cax=cax, orientation="vertical", ticks=[vmin, vmax])
-        cb.ax.set_yticklabels([f"{vmin:.0e}", f"{vmax:.0e}"])
-        cb.set_label(r"$C_\ell$ [$\mu K_{\rm CMB}^2$]")
-
+    fig.subplots_adjust(right=0.86, wspace=0.22)
+    pos = axes[-1].get_position()
+    cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
+    cb = fig.colorbar(last_cf, cax=cax, orientation="vertical", ticks=[float(vmin), float(vmax)])
+    cb.ax.set_yticklabels([f"{float(vmin):.0e}", f"{float(vmax):.0e}"])
+    cb.set_label(r"$C_\ell$ [$\mu K_{\rm CMB}^2$]")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
 
-def _plot_nondegenerate_power2d_delta(
-    *,
-    out_path: pathlib.Path,
-    pre_coadd_all: np.ndarray,
-    c_comb: np.ndarray,
-    pixel_res_rad: float,
-    hit_mask_2d: np.ndarray,
-    w_mean: np.ndarray,
-) -> None:
-    w_norm = float(np.hypot(float(w_mean[0]), float(w_mean[1])))
-    if not (np.isfinite(w_norm) and w_norm > 0):
-        return
-
-    KX, KY, ps_co = power.power2d_from_map(map_2d_mk=pre_coadd_all, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
-    _, _, ps_re = power.power2d_from_map(map_2d_mk=c_comb, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
-
-    ell = np.sqrt(KX * KX + KY * KY)
-    denom = np.maximum(ell * w_norm, 1e-300)
-    cosang = (KX * float(w_mean[0]) + KY * float(w_mean[1])) / denom
-    ky_keep = _exclude_ky_zero_row(KY)
-    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS)) & ky_keep
-
-    delta = (ps_re - ps_co) * 1e6  # (mK)^2 -> (uK)^2
-    delta = np.where(keep, delta, np.nan)
-
-    disp = (np.abs(KX) <= 500.0) & (np.abs(KY) <= 500.0) & np.isfinite(delta)
-    vals = np.abs(delta[disp])
-    if vals.size == 0:
-        return
-    vmax = float(np.percentile(vals, 99))
-    vmax = max(vmax, 1e-6)
-    vmin = -vmax
-
-    fig, ax = plt.subplots(1, 1, figsize=(4.8, 4.2), dpi=150)
-    cmap = plt.get_cmap("coolwarm").copy()
-    cmap.set_bad(color=(1.0, 1.0, 1.0, 1.0))
-    im = ax.imshow(
-        delta,
-        origin="lower",
-        extent=[float(np.min(KX)), float(np.max(KX)), float(np.min(KY)), float(np.max(KY))],
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        interpolation="none",
-        aspect="equal",
-    )
-    ax.set_title("Non-degenerate Δ power (recon - coadd)", fontsize=10)
-    ax.set_xlabel(r"$\ell_x$ [rad$^{-1}$]")
-    ax.set_ylabel(r"$\ell_y$ [rad$^{-1}$]")
-    ax.set_xlim(-500, 500)
-    ax.set_ylim(-500, 500)
-    cb = fig.colorbar(im, ax=ax, orientation="vertical")
-    cb.set_label(r"$\Delta C_\ell$ [$\mu K_{\rm CMB}^2$]")
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
+def _exclude_ky_zero_row(KY: np.ndarray) -> np.ndarray:
+    ky_abs = np.abs(np.asarray(KY, dtype=np.float64))
+    ky_pos = ky_abs[ky_abs > 0.0]
+    if ky_pos.size == 0:
+        return np.ones_like(ky_abs, dtype=bool)
+    ky_min = float(np.min(ky_pos))
+    return ky_abs >= ky_min
 
 
-def _plot_nondegenerate_fourier_and_realspace(
+def _plot_nondegenerate(
     *,
     out_dir: pathlib.Path,
-    filename_prefix: str = "",
-    pre_coadd_all: np.ndarray,
-    c_comb: np.ndarray,
+    suffix: str,
+    naive: np.ndarray,
+    rec: np.ndarray,
     hit_mask_2d: np.ndarray,
     pixel_res_rad: float,
     extent: list[float],
@@ -277,21 +210,22 @@ def _plot_nondegenerate_fourier_and_realspace(
     if not (np.isfinite(w_norm) and w_norm > 0):
         return
 
-    KX, KY, ps_co = power.power2d_from_map(map_2d_mk=pre_coadd_all, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
-    _, _, ps_re = power.power2d_from_map(map_2d_mk=c_comb, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+    KX, KY, ps_co = power.power2d_from_map(map_2d_mk=naive, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+    _, _, ps_re = power.power2d_from_map(map_2d_mk=rec, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
 
     ell = np.sqrt(KX * KX + KY * KY)
     denom = np.maximum(ell * w_norm, 1e-300)
     cosang = (KX * float(w_mean[0]) + KY * float(w_mean[1])) / denom
-    ky_keep = _exclude_ky_zero_row(KY)
-    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS)) & ky_keep
+    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS)) & _exclude_ky_zero_row(KY)
 
     ps_co_m = np.ma.masked_invalid(np.where(keep, ps_co * 1e6, np.nan))
     ps_re_m = np.ma.masked_invalid(np.where(keep, ps_re * 1e6, np.nan))
 
     disp = (np.abs(KX) <= 500.0) & (np.abs(KY) <= 500.0)
     vals = np.concatenate([ps_co_m[disp].compressed(), ps_re_m[disp].compressed()])
-    vmax = float(np.max(vals)) if vals.size > 0 else 1.0
+    if vals.size == 0:
+        return
+    vmax = float(np.max(vals))
     vmin = max(vmax * 1e-5, 1e-30)
     norm = colors.LogNorm(vmin=vmin, vmax=vmax)
     levels = np.logspace(np.log10(vmin), np.log10(vmax), 30)
@@ -300,33 +234,30 @@ def _plot_nondegenerate_fourier_and_realspace(
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(color=(1.0, 1.0, 1.0, 1.0))
     cmap.set_under(cmap(0.0))
-
     cf0 = axes[0].contourf(KX, KY, ps_co_m, levels=levels, cmap=cmap, norm=norm, extend="min")
-    axes[0].set_title("Naive coadd (non-degenerate modes)", fontsize=10)
     axes[1].contourf(KX, KY, ps_re_m, levels=levels, cmap=cmap, norm=norm, extend="min")
-    axes[1].set_title("Combined recon (non-degenerate modes)", fontsize=10)
+    axes[0].set_title("Naive coadd (non-degenerate modes)", fontsize=10)
+    axes[1].set_title("Recon coadd (non-degenerate modes)", fontsize=10)
     for ax in axes:
         ax.set_xlabel(r"$\ell_x$ [rad$^{-1}$]")
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlim(-500, 500)
         ax.set_ylim(-500, 500)
     axes[0].set_ylabel(r"$\ell_y$ [rad$^{-1}$]")
-
     fig.subplots_adjust(right=0.86, wspace=0.22)
     pos = axes[1].get_position()
     cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
     cb = fig.colorbar(cf0, cax=cax, orientation="vertical", ticks=[vmin, vmax])
     cb.ax.set_yticklabels([f"{vmin:.0e}", f"{vmax:.0e}"])
     cb.set_label(r"$C_\ell$ [$\mu K_{\rm CMB}^2$]")
-    fig.savefig(out_dir / f"{filename_prefix}maps_coadd_vs_combined_power2d_nondegenerate.png", bbox_inches="tight")
+    fig.savefig(out_dir / f"maps_coadd_vs_reconcoadd_power2d_nondegenerate{suffix}.png", bbox_inches="tight")
     plt.close(fig)
 
     ell_m, cl_co_m = power.radial_cl_1d_from_power2d(KX=KX, KY=KY, ps2d_mk2=ps_co, n_ell_bins=int(N_ELL_BINS), keep_mask_2d=keep)
     _, cl_re_m = power.radial_cl_1d_from_power2d(KX=KX, KY=KY, ps2d_mk2=ps_re, n_ell_bins=int(N_ELL_BINS), keep_mask_2d=keep)
-
     fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
-    ax.plot(ell_m, cl_co_m, color="k", lw=2.0, label="naive coadd (non-degenerate modes)")
-    ax.plot(ell_m, cl_re_m, color="C3", lw=2.5, label="combined recon (non-degenerate modes)")
+    ax.plot(ell_m, cl_co_m, color="k", lw=2.0, label="naive coadd (non-degenerate)")
+    ax.plot(ell_m, cl_re_m, color="C3", lw=2.5, label="recon coadd (non-degenerate)")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel(r"$\ell$")
@@ -334,40 +265,18 @@ def _plot_nondegenerate_fourier_and_realspace(
     ax.grid(True, which="both", alpha=0.2)
     ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
-    fig.savefig(out_dir / f"{filename_prefix}cl_nondegenerate.png", bbox_inches="tight")
+    fig.savefig(out_dir / f"cl_nondegenerate{suffix}.png", bbox_inches="tight")
     plt.close(fig)
 
-    frac_excl = float(np.mean(~keep[np.isfinite(keep)]))
-    print(
-        f"[non-degenerate modes] w_mean=({float(w_mean[0]):.3f},{float(w_mean[1]):.3f}) deg/s  "
-        f"cos_thr={float(KDOTW_EXCLUDE_COS):.2f}  frac_excluded={frac_excl:.3f}",
-        flush=True,
-    )
-
-    def _band_ratio(ell1, a1, b1, e0, e1):
-        m = (ell1 >= float(e0)) & (ell1 <= float(e1)) & np.isfinite(a1) & np.isfinite(b1) & (b1 > 0)
-        if not bool(np.any(m)):
-            return None
-        r = a1[m] / b1[m]
-        return float(np.median(r)), float(np.percentile(r, 16)), float(np.percentile(r, 84)), int(r.size)
-
-    for (e0, e1) in [(50, 300), (300, 1000), (1000, 3000)]:
-        rr = _band_ratio(ell_m, cl_re_m, cl_co_m, e0, e1)
-        if rr is None:
-            continue
-        med, p16, p84, n = rr
-        print(f"  [cl masked] recon/coadd ell∈[{e0},{e1}] median={med:.3f} p16={p16:.3f} p84={p84:.3f} n={n}", flush=True)
-
     # Real-space maps with excluded Fourier modes removed (set excluded modes -> 0).
-    ny_full, nx_full = int(pre_coadd_all.shape[0]), int(pre_coadd_all.shape[1])
-    ell_x_full = np.fft.fftshift(2.0 * np.pi * np.fft.fftfreq(nx_full, d=float(pixel_res_rad)))
-    ell_y_full = np.fft.fftshift(2.0 * np.pi * np.fft.fftfreq(ny_full, d=float(pixel_res_rad)))
-    KXf, KYf = np.meshgrid(ell_x_full, ell_y_full, indexing="xy")
+    ny, nx = int(naive.shape[0]), int(naive.shape[1])
+    ell_x = np.fft.fftshift(2.0 * np.pi * np.fft.fftfreq(nx, d=float(pixel_res_rad)))
+    ell_y = np.fft.fftshift(2.0 * np.pi * np.fft.fftfreq(ny, d=float(pixel_res_rad)))
+    KXf, KYf = np.meshgrid(ell_x, ell_y, indexing="xy")
     ellf = np.sqrt(KXf * KXf + KYf * KYf)
     denomf = np.maximum(ellf * w_norm, 1e-300)
     cosf = (KXf * float(w_mean[0]) + KYf * float(w_mean[1])) / denomf
-    ky_keep_f = _exclude_ky_zero_row(KYf)
-    keepf = np.isfinite(cosf) & (np.abs(cosf) >= float(KDOTW_EXCLUDE_COS)) & ky_keep_f
+    keepf = np.isfinite(cosf) & (np.abs(cosf) >= float(KDOTW_EXCLUDE_COS)) & _exclude_ky_zero_row(KYf)
 
     def _realspace_filtered(m2d: np.ndarray) -> np.ndarray:
         img = np.asarray(m2d, dtype=np.float64)
@@ -376,140 +285,17 @@ def _plot_nondegenerate_fourier_and_realspace(
         out = np.fft.ifft2(np.fft.ifftshift(F * keepf)).real
         return np.where(hit_mask_2d, out, np.nan).astype(np.float64, copy=False)
 
-    pre_nd = _realspace_filtered(pre_coadd_all)
-    rec_nd = _realspace_filtered(c_comb)
-    vmin_nd, vmax_nd = _robust_vmin_vmax(np.concatenate([pre_nd.ravel(), rec_nd.ravel()]))
-
+    naive_nd = _realspace_filtered(naive)
+    rec_nd = _realspace_filtered(rec)
+    vmin, vmax = _robust_vmin_vmax(np.concatenate([naive_nd.ravel(), rec_nd.ravel()]))
     _plot_map_stack(
-        out_path=out_dir / f"{filename_prefix}maps_coadd_vs_combined_nondegenerate.png",
-        imgs=[pre_nd, rec_nd],
-        titles=[
-            "Naive coadd (non-degenerate modes) [mK]",
-            "Combined reconstruction (non-degenerate modes) [mK]",
-        ],
+        out_path=out_dir / f"maps_coadd_vs_reconcoadd_nondegenerate{suffix}.png",
+        imgs=[naive_nd, rec_nd],
+        titles=["Naive coadd (non-degenerate modes) [mK]", "Recon coadd (non-degenerate modes) [mK]"],
         extent=extent,
-        vmin=vmin_nd,
-        vmax=vmax_nd,
+        vmin=vmin,
+        vmax=vmax,
     )
-
-
-def _grid_focal_plane_frame(
-    *,
-    eff_offsets_arcmin: np.ndarray,
-    eff_counts: np.ndarray,
-    eff_tod_mk_frame: np.ndarray,
-    x_min: float,
-    x_max: float,
-    y_min: float,
-    y_max: float,
-    box_arcmin: float,
-) -> tuple[np.ndarray, list[float]]:
-    """
-    Grid a single frame of TOD onto the focal plane (bilinear deposition).
-    Returns (img, extent).
-    """
-    nx = int(np.ceil((x_max - x_min) / box_arcmin))
-    ny = int(np.ceil((y_max - y_min) / box_arcmin))
-
-    x = np.asarray(eff_offsets_arcmin[:, 0], dtype=np.float64)
-    y = np.asarray(eff_offsets_arcmin[:, 1], dtype=np.float64)
-    xi = (x - float(x_min)) / float(box_arcmin) - 0.5
-    yi = (y - float(y_min)) / float(box_arcmin) - 0.5
-    xi = np.clip(xi, 0.0, float(nx - 1))
-    yi = np.clip(yi, 0.0, float(ny - 1))
-
-    ix0 = np.floor(xi).astype(np.int64)
-    iy0 = np.floor(yi).astype(np.int64)
-    ix1 = np.minimum(ix0 + 1, nx - 1)
-    iy1 = np.minimum(iy0 + 1, ny - 1)
-    fx = xi - ix0
-    fy = yi - iy0
-
-    eff_counts = np.asarray(eff_counts, dtype=np.float64)
-    w00 = (1.0 - fx) * (1.0 - fy) * eff_counts
-    w10 = fx * (1.0 - fy) * eff_counts
-    w01 = (1.0 - fx) * fy * eff_counts
-    w11 = fx * fy * eff_counts
-
-    v = np.asarray(eff_tod_mk_frame, dtype=np.float64)
-    m = np.isfinite(v)
-
-    s = np.zeros((ny, nx), dtype=np.float64)
-    w = np.zeros((ny, nx), dtype=np.float64)
-    np.add.at(s, (iy0[m], ix0[m]), v[m] * w00[m])
-    np.add.at(w, (iy0[m], ix0[m]), w00[m])
-    np.add.at(s, (iy0[m], ix1[m]), v[m] * w10[m])
-    np.add.at(w, (iy0[m], ix1[m]), w10[m])
-    np.add.at(s, (iy1[m], ix0[m]), v[m] * w01[m])
-    np.add.at(w, (iy1[m], ix0[m]), w01[m])
-    np.add.at(s, (iy1[m], ix1[m]), v[m] * w11[m])
-    np.add.at(w, (iy1[m], ix1[m]), w11[m])
-
-    img = np.full((ny, nx), np.nan, dtype=np.float32)
-    hit = w > 0
-    img[hit] = (s[hit] / w[hit]).astype(np.float32)
-    extent_fp = [float(x_min), float(x_max), float(y_min), float(y_max)]
-    return img, extent_fp
-
-
-def _plot_focal_plane_bad_pixels(*, out_path: pathlib.Path, scans, recons) -> None:
-    n_scans = int(len(scans))
-    n_fp = min(4, n_scans)
-    fig, axs = plt.subplots(2, 2, figsize=(10, 8), dpi=150)
-    axs = axs.flatten()
-
-    for i in range(n_fp):
-        ax = axs[i]
-        z = scans[i]
-        r = recons[i]
-
-        eff_offsets = np.asarray(z["eff_offsets_arcmin"])
-        eff_tod0 = np.asarray(z["eff_tod_mk"])[0]
-        eff_counts = np.asarray(z["eff_counts"])
-        mask_good = np.asarray(r["wind_valid_mask"], dtype=bool)
-
-        img, extent_fp = _grid_focal_plane_frame(
-            eff_offsets_arcmin=eff_offsets,
-            eff_counts=eff_counts,
-            eff_tod_mk_frame=eff_tod0,
-            x_min=float(z["focal_x_min_arcmin"]),
-            x_max=float(z["focal_x_max_arcmin"]),
-            y_min=float(z["focal_y_min_arcmin"]),
-            y_max=float(z["focal_y_max_arcmin"]),
-            box_arcmin=float(z["effective_box_arcmin"]),
-        )
-        vmin_fp, vmax_fp = _robust_vmin_vmax(img)
-
-        ax.imshow(
-            img,
-            origin="lower",
-            extent=extent_fp,
-            cmap="coolwarm",
-            interpolation="nearest",
-            vmin=vmin_fp,
-            vmax=vmax_fp,
-        )
-        bad_idx = np.where(~mask_good)[0]
-        if bad_idx.size > 0:
-            bx = eff_offsets[bad_idx, 0]
-            by = eff_offsets[bad_idx, 1]
-            ax.scatter(bx, by, marker="x", c="k", s=40, linewidths=1.0, label="Dropped" if i == 0 else None)
-
-        ax.set_title(f"scan{i:03d} FP (t=0) dropped={bad_idx.size}")
-        ax.set_aspect("equal")
-        ax.set_xlabel("x [arcmin]")
-        ax.set_ylabel("y [arcmin]")
-
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
-
-
-@dataclass(frozen=True)
-class Config:
-    dataset_dir: str = "ra0hdec-59.75"
-    recon_mode: str = "map"  # 'ml' or 'map'
 
 
 def _discover_obs_ids(dataset_dir: pathlib.Path) -> list[str]:
@@ -532,222 +318,134 @@ def _discover_scan_paths(*, obs_dir: pathlib.Path) -> list[pathlib.Path]:
     return scan_paths
 
 
-def _streaming_coadd_sum_hits(
-    *,
-    scan_paths: list[pathlib.Path],
-    bbox: map_util.BBox,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Streaming coadd: accumulate sum and hit counts without storing all scans.
-
-    Args:
-      scan_paths: list of scan npz paths.
-      bbox: global bbox.
-
-    Returns:
-      sum_2d: (ny,nx) float64
-      hit_2d: (ny,nx) int64
-    """
-    s = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
-    c = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
-    for p in scan_paths:
-        z = np.load(p, allow_pickle=False)
-        eff_tod_mk = np.asarray(z["eff_tod_mk"])
-        pix_index = np.asarray(z["pix_index"], dtype=np.int64)
-        ok = np.isfinite(eff_tod_mk)
-        if bool(np.any(ok)):
-            ij = pix_index[ok]
-            ix = ij[:, 0] - int(bbox.ix0)
-            iy = ij[:, 1] - int(bbox.iy0)
-            v = eff_tod_mk[ok].astype(np.float64, copy=False)
-            np.add.at(s, (iy, ix), v)
-            np.add.at(c, (iy, ix), 1)
-        z.close()
-    return s, c
-
-
-def _streaming_hits_only(
-    *,
-    scan_paths: list[pathlib.Path],
-    bbox: map_util.BBox,
-) -> np.ndarray:
-    """
-    Streaming hit counts for a set of scans.
-    """
-    c = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
-    for p in scan_paths:
-        z = np.load(p, allow_pickle=False)
-        eff_tod_mk = np.asarray(z["eff_tod_mk"])
-        pix_index = np.asarray(z["pix_index"], dtype=np.int64)
-        ok = np.isfinite(eff_tod_mk)
-        if bool(np.any(ok)):
-            ij = pix_index[ok]
-            ix = ij[:, 0] - int(bbox.ix0)
-            iy = ij[:, 1] - int(bbox.iy0)
-            np.add.at(c, (iy, ix), 1)
-        z.close()
-    return c
-
-
-def _embed_submap_into_global(
-    *,
-    sub_img: np.ndarray,
-    sub_bbox: map_util.BBox,
-    global_bbox: map_util.BBox,
-    fill_value: float = np.nan,
-) -> np.ndarray:
-    """
-    Place a (sub_bbox.ny, sub_bbox.nx) image into a (global_bbox.ny, global_bbox.nx) canvas.
-    """
-    out = np.full((int(global_bbox.ny), int(global_bbox.nx)), float(fill_value), dtype=np.float64)
-    x0 = int(sub_bbox.ix0 - global_bbox.ix0)
-    y0 = int(sub_bbox.iy0 - global_bbox.iy0)
-    out[y0 : y0 + int(sub_bbox.ny), x0 : x0 + int(sub_bbox.nx)] = np.asarray(sub_img, dtype=np.float64)
-    return out
-
-
-def _plot_dataset_all_obs(
+def _discover_scan_items(
     *,
     dataset_dir: pathlib.Path,
     recon_root: pathlib.Path,
     recon_mode: str,
-    out_dir: pathlib.Path,
-    field_rows: list[tuple[int, str, list[pathlib.Path]]],
-) -> None:
+) -> list[tuple[str, int, pathlib.Path, pathlib.Path]]:
     """
-    Dataset-level plots combining all obs IDs in dataset_dir.
+    Return (obs_id, scan_idx, scan_path, recon_path) for scans that have single-scan recon outputs.
+    """
+    items = []
+    for obs_id in _discover_obs_ids(dataset_dir):
+        scan_paths = _discover_scan_paths(obs_dir=dataset_dir / obs_id)
+        for i, scan_path in enumerate(scan_paths):
+            recon_path = recon_root / obs_id / f"recon_scan{i:03d}_{recon_mode}.npz"
+            if recon_path.exists():
+                items.append((str(obs_id), int(i), scan_path, recon_path))
+    return items
 
-    "Combined reconstruction" here means: take each obs's `recon_combined_<mode>.npz`
-    map and coadd those per-obs recon maps into a dataset-level recon map, weighted
-    by per-obs hit counts (computed from that obs's scans).
-    """
+
+def _suffix(mode: str) -> str:
+    return f"_{str(mode).lower()}"
+
+
+def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_dir: pathlib.Path, recon_mode: str) -> None:
     recon_mode = str(recon_mode).lower()
     if recon_mode not in ("ml", "map"):
-        raise ValueError("recon_mode must be 'ml' or 'map'.")
+        raise ValueError("RECON_MODE must be 'ml' or 'map'.")
 
-    # Load per-obs combined recon metadata and compute a global bbox.
-    comb_rows = []
-    for _n, obs_id, scan_paths in field_rows:
-        comb_path = recon_root / obs_id / f"recon_combined_{recon_mode}.npz"
-        if not comb_path.exists():
+    scan_items = _discover_scan_items(dataset_dir=dataset_dir, recon_root=recon_root, recon_mode=recon_mode)
+    if len(scan_items) == 0:
+        raise RuntimeError(f"No single-scan recon files found under {recon_root} for mode={recon_mode}.")
+
+    # Global bbox from recon scan bboxes.
+    bboxes = []
+    pix_deg0 = None
+    winds = []
+    for _obs_id, _scan_i, _scan_path, recon_path in scan_items:
+        r = np.load(recon_path, allow_pickle=False)
+        rx0 = int(r["bbox_ix0"])
+        ry0 = int(r["bbox_iy0"])
+        rnx = int(r["nx"])
+        rny = int(r["ny"])
+        bboxes.append(map_util.BBox(ix0=rx0, ix1=rx0 + rnx - 1, iy0=ry0, iy1=ry0 + rny - 1))
+        pix_deg = float(r["pixel_size_deg"])
+        pix_deg0 = pix_deg if pix_deg0 is None else pix_deg0
+        if abs(float(pix_deg) - float(pix_deg0)) > 1e-12:
+            r.close()
+            raise RuntimeError("pixel_size_deg differs across scans; cannot combine.")
+        w = np.asarray(r["wind_deg_per_s"], dtype=np.float64).reshape(-1) if "wind_deg_per_s" in r.files else None
+        if w is not None and w.size >= 2 and np.all(np.isfinite(w[:2])):
+            winds.append(w[:2])
+        r.close()
+
+    bbox = map_util.bbox_union(bboxes)
+    pixel_size_deg = float(pix_deg0)
+    extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
+    pixel_res_rad = float(pixel_size_deg) * np.pi / 180.0
+
+    # Streaming accumulation over all scan samples.
+    s_naive = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
+    c_naive = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
+    s_rec = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
+    c_rec = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
+
+    for _obs_id, _scan_i, scan_path, recon_path in scan_items:
+        z = np.load(scan_path, allow_pickle=False)
+        eff_tod_mk = np.asarray(z["eff_tod_mk"])
+        pix_index = np.asarray(z["pix_index"], dtype=np.int64)
+        ok = np.isfinite(eff_tod_mk)
+        if not bool(np.any(ok)):
+            z.close()
             continue
-        z = np.load(comb_path, allow_pickle=False)
-        bbox_ix0 = int(z["bbox_ix0"])
-        bbox_iy0 = int(z["bbox_iy0"])
-        nx = int(z["nx"])
-        ny = int(z["ny"])
-        bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
-        pixel_size_deg = float(z["pixel_size_deg"])
-        c_sub = _img_from_vec(np.asarray(z["c_hat_full_mk"]), nx=nx, ny=ny)
-        winds = np.asarray(z["winds_deg_per_s"], dtype=np.float64) if "winds_deg_per_s" in z.files else None
+        ij = pix_index[ok]  # (n_hit, 2) global (ix,iy)
+        ixg = ij[:, 0] - int(bbox.ix0)
+        iyg = ij[:, 1] - int(bbox.iy0)
+        v = eff_tod_mk[ok].astype(np.float64, copy=False)
+        np.add.at(s_naive, (iyg, ixg), v)
+        np.add.at(c_naive, (iyg, ixg), 1)
         z.close()
-        comb_rows.append((str(obs_id), scan_paths, bbox, pixel_size_deg, c_sub, winds))
 
-    if len(comb_rows) == 0:
-        raise RuntimeError(f"No combined recon files found under {recon_root} for mode={recon_mode}.")
+        r = np.load(recon_path, allow_pickle=False)
+        rx0 = int(r["bbox_ix0"])
+        ry0 = int(r["bbox_iy0"])
+        rnx = int(r["nx"])
+        rny = int(r["ny"])
+        rimg = _img_from_vec(np.asarray(r["c_hat_full_mk"]), nx=rnx, ny=rny)
+        r.close()
 
-    pix_deg0 = float(comb_rows[0][3])
-    if any([abs(float(r[3]) - pix_deg0) > 1e-12 for r in comb_rows]):
-        raise RuntimeError("pixel_size_deg differs across obs; cannot combine into one dataset plot.")
+        ixr = ij[:, 0] - rx0
+        iyr = ij[:, 1] - ry0
+        m_in = (ixr >= 0) & (ixr < rnx) & (iyr >= 0) & (iyr < rny)
+        if bool(np.any(m_in)):
+            rv = rimg[iyr[m_in], ixr[m_in]].astype(np.float64, copy=False)
+            np.add.at(s_rec, (iyg[m_in], ixg[m_in]), rv)
+            np.add.at(c_rec, (iyg[m_in], ixg[m_in]), 1)
 
-    global_bbox = map_util.bbox_union([r[2] for r in comb_rows])
-    extent = _extent_deg(
-        bbox_ix0=int(global_bbox.ix0),
-        bbox_iy0=int(global_bbox.iy0),
-        nx=int(global_bbox.nx),
-        ny=int(global_bbox.ny),
-        pixel_size_deg=float(pix_deg0),
-    )
-    pixel_res_rad = float(pix_deg0) * np.pi / 180.0
+    naive = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
+    hit_mask = c_naive > 0
+    naive[hit_mask] = (s_naive[hit_mask] / c_naive[hit_mask]).astype(np.float32)
 
-    # Dataset naive coadd (all scans, all obs).
-    all_scan_paths = []
-    for _n, _obs_id, scan_paths in field_rows:
-        all_scan_paths.extend(list(scan_paths))
-    s_all, hit_all = _streaming_coadd_sum_hits(scan_paths=all_scan_paths, bbox=global_bbox)
-    pre_coadd_all = np.full((int(global_bbox.ny), int(global_bbox.nx)), np.nan, dtype=np.float32)
-    hit_mask_2d = hit_all > 0
-    pre_coadd_all[hit_mask_2d] = (s_all[hit_mask_2d] / hit_all[hit_mask_2d]).astype(np.float32)
+    rec = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
+    hit_mask_rec = c_rec > 0
+    rec[hit_mask_rec] = (s_rec[hit_mask_rec] / c_rec[hit_mask_rec]).astype(np.float32)
 
-    # Dataset recon coadd (coadd per-obs combined recon maps, weighted by per-obs hit counts).
-    wsum = np.zeros((int(global_bbox.ny), int(global_bbox.nx)), dtype=np.float64)
-    vsum = np.zeros((int(global_bbox.ny), int(global_bbox.nx)), dtype=np.float64)
-    winds_all = []
-
-    for obs_id, scan_paths, bbox_sub, _pix_deg, c_sub, winds in comb_rows:
-        if winds is not None and winds.size > 0 and np.all(np.isfinite(winds[:, :2])):
-            winds_all.append(np.asarray(winds[:, :2], dtype=np.float64))
-
-        hits_obs = _streaming_hits_only(scan_paths=scan_paths, bbox=global_bbox).astype(np.float64, copy=False)
-        c_glob = _embed_submap_into_global(sub_img=c_sub, sub_bbox=bbox_sub, global_bbox=global_bbox, fill_value=np.nan)
-        ok = (hits_obs > 0) & np.isfinite(c_glob)
-        vsum[ok] += hits_obs[ok] * c_glob[ok]
-        wsum[ok] += hits_obs[ok]
-
-    c_dataset = np.full((int(global_bbox.ny), int(global_bbox.nx)), np.nan, dtype=np.float64)
-    ok = wsum > 0
-    c_dataset[ok] = vsum[ok] / wsum[ok]
-    c_dataset = c_dataset.astype(np.float32, copy=False)
-
-    # Mean wind across all scans (for non-degenerate masking plots).
-    w_mean = None
-    if len(winds_all) > 0:
-        ww = np.concatenate(winds_all, axis=0)
-        if ww.ndim == 2 and ww.shape[1] >= 2 and np.all(np.isfinite(ww[:, :2])):
-            w_mean = np.mean(ww[:, :2], axis=0)
-
-    # Plots.
+    suf = _suffix(recon_mode)
     out_dir.mkdir(parents=True, exist_ok=True)
-    vmin_comb, vmax_comb = _robust_vmin_vmax(np.concatenate([pre_coadd_all.ravel(), c_dataset.ravel()]))
 
+    vmin, vmax = _robust_vmin_vmax(np.concatenate([naive.ravel(), rec.ravel()]))
     _plot_map_stack(
-        out_path=out_dir / f"allobs_maps_coadd_vs_combined_{recon_mode}.png",
-        imgs=[pre_coadd_all, c_dataset],
-        titles=[
-            f"Naive coadd (all obs, all scans) [mK]",
-            f"Recon coadd (per-obs combined, hit-weighted) [{recon_mode.upper()}] [mK]",
-        ],
+        out_path=out_dir / f"maps_coadd_vs_reconcoadd{suf}.png",
+        imgs=[naive, rec],
+        titles=["Naive coadd (all scans) [mK]", f"Recon coadd (all single-scan recons) [{recon_mode.upper()}] [mK]"],
         extent=extent,
-        vmin=vmin_comb,
-        vmax=vmax_comb,
+        vmin=vmin,
+        vmax=vmax,
     )
 
     _plot_power2d_comparison(
-        out_path=out_dir / f"allobs_maps_coadd_vs_combined_power2d_{recon_mode}.png",
-        maps_2d_mk=[("Naive coadd (all obs)", pre_coadd_all), (f"Recon coadd ({recon_mode})", c_dataset)],
+        out_path=out_dir / f"maps_coadd_vs_reconcoadd_power2d{suf}.png",
+        maps_2d_mk=[("Naive coadd", naive), (f"Recon coadd ({recon_mode})", rec)],
         pixel_res_rad=pixel_res_rad,
-        hit_mask_2d=hit_mask_2d,
+        hit_mask_2d=hit_mask,
     )
 
-    if w_mean is not None:
-        _plot_nondegenerate_fourier_and_realspace(
-            out_dir=out_dir,
-            filename_prefix=f"allobs_{recon_mode}_",
-            pre_coadd_all=pre_coadd_all,
-            c_comb=c_dataset,
-            hit_mask_2d=hit_mask_2d,
-            pixel_res_rad=pixel_res_rad,
-            extent=extent,
-            w_mean=w_mean,
-        )
-        if recon_mode == "ml":
-            _plot_nondegenerate_power2d_delta(
-                out_path=out_dir / "allobs_ml_power2d_nondegenerate_delta.png",
-                pre_coadd_all=pre_coadd_all,
-                c_comb=c_dataset,
-                hit_mask_2d=hit_mask_2d,
-                pixel_res_rad=pixel_res_rad,
-                w_mean=w_mean,
-            )
-
-    ell, cl_naive = power.radial_cl_1d_from_map(
-        map_2d_mk=pre_coadd_all, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask_2d, n_ell_bins=int(N_ELL_BINS)
-    )
-    _, cl_rec = power.radial_cl_1d_from_map(
-        map_2d_mk=c_dataset, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask_2d, n_ell_bins=int(N_ELL_BINS)
-    )
+    ell, cl_naive = power.radial_cl_1d_from_map(map_2d_mk=naive, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=int(N_ELL_BINS))
+    _, cl_rec = power.radial_cl_1d_from_map(map_2d_mk=rec, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=int(N_ELL_BINS))
     fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
-    ax.plot(ell, cl_naive, color="k", lw=2.0, label="naive coadd (all obs)")
+    ax.plot(ell, cl_naive, color="k", lw=2.0, label="naive coadd")
     ax.plot(ell, cl_rec, color="C3", lw=2.5, label=f"recon coadd ({recon_mode})")
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -756,292 +454,123 @@ def _plot_dataset_all_obs(
     ax.grid(True, which="both", alpha=0.2)
     ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
-    fig.savefig(out_dir / f"allobs_cl_{recon_mode}.png", bbox_inches="tight")
+    fig.savefig(out_dir / f"cl{suf}.png", bbox_inches="tight")
     plt.close(fig)
 
+    if len(winds) > 0:
+        w_mean = np.mean(np.asarray(winds, dtype=np.float64), axis=0)
+        _plot_nondegenerate(
+            out_dir=out_dir,
+            suffix=suf,
+            naive=naive,
+            rec=rec,
+            hit_mask_2d=hit_mask,
+            pixel_res_rad=pixel_res_rad,
+            extent=extent,
+            w_mean=w_mean,
+        )
 
-def _plot_one_field(
-    *,
-    obs_id: str,
-    scan_paths: list[pathlib.Path],
-    recon_dir: pathlib.Path,
-    out_dir: pathlib.Path,
-    recon_mode: str,
-    filename_prefix: str = "",
-    make_scan_stacks: bool,
-    make_focal_plane: bool,
-) -> None:
-    def outp(name: str) -> pathlib.Path:
-        return out_dir / f"{filename_prefix}{name}"
 
+def _plot_obs_scan_stacks(*, obs_id: str, scan_paths: list[pathlib.Path], recon_dir: pathlib.Path, out_dir: pathlib.Path, recon_mode: str) -> None:
     recon_mode = str(recon_mode).lower()
     if recon_mode not in ("ml", "map"):
-        raise ValueError("recon_mode must be 'ml' or 'map'.")
+        raise ValueError("mode must be 'ml' or 'map'.")
 
-    comb_path = recon_dir / f"recon_combined_{recon_mode}.npz"
-    if not comb_path.exists():
-        print(f"[skip plots] field {obs_id}: missing {comb_path}", flush=True)
-        return
-
-    scans = [np.load(p, allow_pickle=False) for p in scan_paths]
     recon_paths = [recon_dir / f"recon_scan{i:03d}_{recon_mode}.npz" for i in range(len(scan_paths))]
     if any([not p.exists() for p in recon_paths]):
-        # This can happen if reconstruction is still running. Skip cleanly.
-        print(f"[skip plots] field {obs_id}: missing per-scan recon files for mode={recon_mode}", flush=True)
-        for z in scans:
-            z.close()
         return
-    recons = [np.load(p, allow_pickle=False) for p in recon_paths]
-    comb = np.load(comb_path, allow_pickle=False)
 
-    n_scans = int(len(scans))
-    pixel_size_deg = float(scans[0]["pixel_size_deg"])
-    bbox_ix0 = int(comb["bbox_ix0"])
-    bbox_iy0 = int(comb["bbox_iy0"])
-    nx = int(comb["nx"])
-    ny = int(comb["ny"])
-    extent = _extent_deg(bbox_ix0=bbox_ix0, bbox_iy0=bbox_iy0, nx=nx, ny=ny, pixel_size_deg=pixel_size_deg)
-    pixel_res_rad = float(pixel_size_deg) * np.pi / 180.0
+    # Use bbox from the first recon scan.
+    r0 = np.load(recon_paths[0], allow_pickle=False)
+    bbox_ix0 = int(r0["bbox_ix0"])
+    bbox_iy0 = int(r0["bbox_iy0"])
+    nx = int(r0["nx"])
+    ny = int(r0["ny"])
+    pixel_size_deg = float(r0["pixel_size_deg"])
+    r0.close()
 
     bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
+    extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
 
-    pre_maps, pre_hits = [], []
+    scans = [np.load(p, allow_pickle=False) for p in scan_paths]
+    recons = [np.load(p, allow_pickle=False) for p in recon_paths]
+
+    pre_maps = []
     for z in scans:
-        m, h = map_util.coadd_map(
+        m, _h = map_util.coadd_map(
             eff_tod_mk=np.asarray(z["eff_tod_mk"], dtype=np.float32),
             pix_index=np.asarray(z["pix_index"], dtype=np.int64),
             bbox=bbox,
         )
         pre_maps.append(m)
-        pre_hits.append(h)
 
-    pre_coadd_all, hit_all = map_util.coadd_map_global(
-        scans_eff_tod_mk=[np.asarray(z["eff_tod_mk"], dtype=np.float32) for z in scans],
-        scans_pix_index=[np.asarray(z["pix_index"], dtype=np.int64) for z in scans],
-        bbox=bbox,
-    )
-    hit_mask_2d = hit_all > 0
-
-    c_comb = _img_from_vec(comb["c_hat_full_mk"], nx=nx, ny=ny)
     c_scans = [_img_from_vec(r["c_hat_full_mk"], nx=nx, ny=ny) for r in recons]
 
-    vmin_comb, vmax_comb = _robust_vmin_vmax(np.concatenate([pre_coadd_all.ravel(), c_comb.ravel()]))
     vmin_pre, vmax_pre = _robust_vmin_vmax(np.concatenate([m.ravel() for m in pre_maps]))
     vmin_rec, vmax_rec = _robust_vmin_vmax(np.concatenate([m.ravel() for m in c_scans]))
+    suf = _suffix(recon_mode)
 
-    # 1) theoretical Cl vs measured Cl (pre maps)
-    fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
-    ell0 = None
-    for i, m in enumerate(pre_maps):
-        ell, cl = power.radial_cl_1d_from_map(
-            map_2d_mk=m, pixel_res_rad=pixel_res_rad, hit_mask=(pre_hits[i] > 0), n_ell_bins=int(N_ELL_BINS)
-        )
-        ell0 = ell if ell0 is None else ell0
-        ax.plot(ell, cl, lw=1.0, alpha=0.6, label=f"scan{i:03d} (measured)")
-    if ell0 is not None:
-        cl_th = power.atmospheric_power_spectrum_TQU(ell0, "TT", nu_GHz=float(NU_GHZ), epsilon_deg=float(EPSILON_DEG))
-        ax.plot(ell0, cl_th, color="k", lw=2.0, label="theory (TT, Kolmogorov)")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel(r"$C_\ell$ [mK$^2$]")
-    ax.grid(True, which="both", alpha=0.2)
-    ax.legend(fontsize=8, ncol=2, loc="best")
-    fig.tight_layout()
-    fig.savefig(outp("cl_atmosphere.png"), bbox_inches="tight")
-    plt.close(fig)
-
-    # 2) maps: naive coadd vs combined recon
     _plot_map_stack(
-        out_path=outp("maps_coadd_vs_combined.png"),
-        imgs=[pre_coadd_all, c_comb],
-        titles=["Naive coadd (all scans) [mK]", "Combined reconstruction [mK]"],
+        out_path=out_dir / f"{obs_id}_maps_coadd_scans{suf}.png",
+        imgs=pre_maps,
+        titles=[f"obs{obs_id} scan{i:03d} naive coadd [mK]" for i in range(len(pre_maps))],
         extent=extent,
-        vmin=vmin_comb,
-        vmax=vmax_comb,
+        vmin=vmin_pre,
+        vmax=vmax_pre,
     )
 
-    # 2b) 2D Fourier power comparison
-    _plot_power2d_comparison(
-        out_path=outp("maps_coadd_vs_combined_power2d.png"),
-        maps_2d_mk=[("Naive coadd (all scans)", pre_coadd_all), ("Combined reconstruction", c_comb)],
-        pixel_res_rad=pixel_res_rad,
-        hit_mask_2d=hit_mask_2d,
-    )
-
-    # 2c/2d) non-degenerate Fourier modes
-    w_mean = None
-    try:
-        ww = np.asarray(comb["winds_deg_per_s"], dtype=np.float64)
-        if ww.ndim == 2 and ww.shape[1] >= 2 and np.all(np.isfinite(ww[:, :2])):
-            w_mean = np.mean(ww[:, :2], axis=0)
-    except Exception:
-        w_mean = None
-    if w_mean is not None:
-        _plot_nondegenerate_fourier_and_realspace(
-            out_dir=out_dir,
-            filename_prefix=str(filename_prefix),
-            pre_coadd_all=pre_coadd_all,
-            c_comb=c_comb,
-            hit_mask_2d=hit_mask_2d,
-            pixel_res_rad=pixel_res_rad,
-            extent=extent,
-            w_mean=w_mean,
-        )
-        if recon_mode == "ml":
-            _plot_nondegenerate_power2d_delta(
-                out_path=outp("power2d_nondegenerate_delta.png"),
-                pre_coadd_all=pre_coadd_all,
-                c_comb=c_comb,
-                hit_mask_2d=hit_mask_2d,
-                pixel_res_rad=pixel_res_rad,
-                w_mean=w_mean,
-            )
-
-    if make_scan_stacks:
-        _plot_map_stack(
-            out_path=outp("maps_coadd_scans.png"),
-            imgs=pre_maps,
-            titles=[f"obs{obs_id} scan{i:03d} naive coadd [mK]" for i in range(n_scans)],
-            extent=extent,
-            vmin=vmin_pre,
-            vmax=vmax_pre,
-        )
-
-        titles = []
-        for i in range(n_scans):
-            w = np.asarray(recons[i]["wind_deg_per_s"], dtype=np.float64).reshape(-1)
-            sx = float(recons[i]["wind_sigma_x_deg_per_s"])
-            sy = float(recons[i]["wind_sigma_y_deg_per_s"])
-            if w.size >= 2 and np.all(np.isfinite(w[:2])):
-                if np.isfinite(sx) and np.isfinite(sy):
-                    w_title = f"w=({w[0]:.2f},{w[1]:.2f}) ± ({sx:.2f},{sy:.2f}) deg/s"
-                else:
-                    w_title = f"w=({w[0]:.2f},{w[1]:.2f}) deg/s"
+    titles = []
+    for i, r in enumerate(recons):
+        w = np.asarray(r["wind_deg_per_s"], dtype=np.float64).reshape(-1)
+        sx = float(r["wind_sigma_x_deg_per_s"])
+        sy = float(r["wind_sigma_y_deg_per_s"])
+        if w.size >= 2 and np.all(np.isfinite(w[:2])):
+            if np.isfinite(sx) and np.isfinite(sy):
+                w_title = f"w=({w[0]:.2f},{w[1]:.2f}) ± ({sx:.2f},{sy:.2f}) deg/s"
             else:
-                w_title = "w=(nan,nan) deg/s"
-            titles.append(f"obs{obs_id} scan{i:03d} reconstructed CMB [mK]\n{w_title}")
+                w_title = f"w=({w[0]:.2f},{w[1]:.2f}) deg/s"
+        else:
+            w_title = "w=(nan,nan) deg/s"
+        titles.append(f"obs{obs_id} scan{i:03d} reconstructed CMB [mK]\n{w_title}")
 
-        _plot_map_stack(
-            out_path=outp("maps_recon_scans.png"),
-            imgs=c_scans,
-            titles=titles,
-            extent=extent,
-            vmin=vmin_rec,
-            vmax=vmax_rec,
-        )
-
-    # 5) power spectrum summary
-    ell, cl_naive = power.radial_cl_1d_from_map(
-        map_2d_mk=pre_coadd_all, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask_2d, n_ell_bins=int(N_ELL_BINS)
-    )
-    _, cl_comb = power.radial_cl_1d_from_map(
-        map_2d_mk=c_comb, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask_2d, n_ell_bins=int(N_ELL_BINS)
+    _plot_map_stack(
+        out_path=out_dir / f"{obs_id}_maps_recon_scans{suf}.png",
+        imgs=c_scans,
+        titles=titles,
+        extent=extent,
+        vmin=vmin_rec,
+        vmax=vmax_rec,
     )
 
-    fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
-    for i in range(n_scans):
-        _, cl_pre_i = power.radial_cl_1d_from_map(
-            map_2d_mk=pre_maps[i], pixel_res_rad=pixel_res_rad, hit_mask=(pre_hits[i] > 0), n_ell_bins=int(N_ELL_BINS)
-        )
-        ax.plot(ell, cl_pre_i, color="0.6", lw=1.0, alpha=0.35)
-    for i in range(n_scans):
-        _, cl_rec_i = power.radial_cl_1d_from_map(
-            map_2d_mk=c_scans[i], pixel_res_rad=pixel_res_rad, hit_mask=hit_mask_2d, n_ell_bins=int(N_ELL_BINS)
-        )
-        ax.plot(ell, cl_rec_i, color="C0", lw=1.0, alpha=0.35)
-
-    ax.plot(ell, cl_naive, color="k", lw=2.0, label="naive coadd (all scans)")
-    ax.plot(ell, cl_comb, color="C3", lw=2.5, label="combined reconstruction")
-    ax.plot([], [], color="0.6", lw=2.0, label="coadd (per scan)")
-    ax.plot([], [], color="C0", lw=2.0, label="recon (per scan)")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel(r"$C_\ell$ [mK$^2$]")
-    ax.grid(True, which="both", alpha=0.2)
-    ax.legend(fontsize=8, loc="best")
-    fig.tight_layout()
-    fig.savefig(outp("cl.png"), bbox_inches="tight")
-    plt.close(fig)
-
-    if make_focal_plane:
-        _plot_focal_plane_bad_pixels(out_path=outp("focal_plane_bad_pixels.png"), scans=scans, recons=recons)
-
-    for z in scans + recons + [comb]:
+    for z in scans + recons:
         z.close()
 
 
-def main(cfg: Config) -> None:
-    recon_mode = str(cfg.recon_mode).lower()
-    if recon_mode not in ("ml", "map"):
-        raise ValueError("recon_mode must be 'ml' or 'map'.")
-    dataset_dir = DATA_DIR / str(cfg.dataset_dir)
+def main(*, dataset: str) -> None:
+    mode = str(RECON_MODE).lower()
+    if mode not in ("ml", "map"):
+        raise ValueError("RECON_MODE must be 'ml' or 'map'.")
+
+    dataset_dir = DATA_DIR / str(dataset)
     if not dataset_dir.exists():
         raise RuntimeError(f"Dataset directory does not exist: {dataset_dir}")
     recon_root = dataset_dir.parent / f"{dataset_dir.name}_recon"
     if not recon_root.exists():
         raise RuntimeError(f"Recon directory does not exist: {recon_root} (run run_reconstruction.py first)")
 
-    obs_ids = _discover_obs_ids(dataset_dir)
-    if len(obs_ids) == 0:
-        raise RuntimeError(f"No obs-id subdirectories found under {dataset_dir}.")
+    out_dir = recon_root / "plots"
+    _plot_dataset(dataset_dir=dataset_dir, recon_root=recon_root, out_dir=out_dir, recon_mode=mode)
 
-    # Rank fields by number of scan files (descending), then obs_id.
-    field_rows = []
-    for obs_id in obs_ids:
+    # Per-obs scan stacks (top-N by number of scan files).
+    rows = []
+    for obs_id in _discover_obs_ids(dataset_dir):
         scan_paths = _discover_scan_paths(obs_dir=dataset_dir / obs_id)
         if len(scan_paths) == 0:
             continue
-        field_rows.append((int(len(scan_paths)), str(obs_id), scan_paths))
-    field_rows.sort(key=lambda x: (-x[0], x[1]))
-
-    top_map = set([r[1] for r in field_rows[: int(TOP_FIELDS_MAP_STACK)]])
-    top_fp = set([r[1] for r in field_rows[: int(TOP_FIELDS_FOCAL_PLANE)]])
-
-    # Dataset-level plots (combine all obs IDs).
-    out_root_plots = recon_root / "plots"
-    out_root_plots.mkdir(parents=True, exist_ok=True)
-    _plot_dataset_all_obs(
-        dataset_dir=dataset_dir,
-        recon_root=recon_root,
-        recon_mode=recon_mode,
-        out_dir=out_root_plots,
-        field_rows=field_rows,
-    )
-
-    # Per-obs scan stacks / focal plane snapshots (top-N only), written into the dataset plots folder.
-    for _n, obs_id, scan_paths in field_rows[: max(int(TOP_FIELDS_MAP_STACK), int(TOP_FIELDS_FOCAL_PLANE), int(TOP_FIELDS_PEROBS_SUMMARY))]:
-        recon_dir = recon_root / obs_id
-        make_scan = obs_id in top_map
-        make_fp = obs_id in top_fp
-        make_summary = obs_id in set([r[1] for r in field_rows[: int(TOP_FIELDS_PEROBS_SUMMARY)]])
-        _plot_one_field(
-            obs_id=obs_id,
-            scan_paths=scan_paths,
-            recon_dir=recon_dir,
-            out_dir=out_root_plots,
-            recon_mode=recon_mode,
-            filename_prefix=f"{obs_id}_",
-            make_scan_stacks=make_scan,
-            make_focal_plane=make_fp,
-        )
-        if not make_summary:
-            # Remove per-obs summary plots if user only wants scan stacks/focal-plane.
-            # Keep only scan-stack and focal-plane products which are easiest to inspect.
-            for name in [
-                "cl_atmosphere.png",
-                "maps_coadd_vs_combined.png",
-                "maps_coadd_vs_combined_power2d.png",
-                "cl.png",
-                "maps_coadd_vs_combined_power2d_nondegenerate.png",
-                "cl_nondegenerate.png",
-                "maps_coadd_vs_combined_nondegenerate.png",
-                "power2d_nondegenerate_delta.png",
-            ]:
-                p = out_root_plots / f"{obs_id}_{name}"
-                if p.exists():
-                    p.unlink()
+        rows.append((int(len(scan_paths)), str(obs_id), scan_paths))
+    rows.sort(key=lambda x: (-x[0], x[1]))
+    for _n, obs_id, scan_paths in rows[: int(TOP_OBS_SCAN_STACKS)]:
+        _plot_obs_scan_stacks(obs_id=obs_id, scan_paths=scan_paths, recon_dir=recon_root / obs_id, out_dir=out_dir, recon_mode=mode)
 
     print(f"Wrote plots to {recon_root}", flush=True)
 
@@ -1050,6 +579,5 @@ if __name__ == "__main__":
     import sys
 
     dataset = sys.argv[1] if len(sys.argv) >= 2 else "ra0hdec-59.75"
-    for recon_mode in ("ml", "map"):
-        main(Config(dataset_dir=str(dataset), recon_mode=str(recon_mode)))
+    main(dataset=str(dataset))
 
