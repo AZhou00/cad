@@ -1,143 +1,197 @@
 ## Data directory to use (verified)
 
-- Primary example (per Tom Crawford):
-  - `/sptlocal/user/tcrawfor/for_reijo/spt3g_data/ra0hdec-59.75/79891185/`
+This document describes the current pipeline under:
 
-Last verified: 2026-02-05
+- `/home/ajzhou/spt_tod_structured_data/caliberated_data/scripts/`
+
+Primary data roots used by the current scripts:
+
+- Raw downsampled TOD root:
+  - `/sptgrid/data/bolodata/downsampled/`
+- Per-observation calibration frame root:
+  - `/sptgrid/analysis/calarchive/v5/calframe/`
+- Structured output root:
+  - `/scratch/ajzhou/caliberated_data/data/`
+
+Last verified: 2026-02-11 (against code in this repository)
 
 ## Directory layout (verified)
 
-`/sptlocal/user/tcrawfor/for_reijo/spt3g_data/<field>/<obsid>/`
+Input trees:
 
-- Calibrated TOD chunk (used by `extract_binned_tod.py`):
-  - `0001_calibrated.g3`
+- Raw downsampled observation:
+  - `/sptgrid/data/bolodata/downsampled/<field>/<obsid>/`
+  - contains:
+    - `nominal_online_cal.g3`
+    - `0000.g3`, `0001.g3`, ...
+- Calibration archive frame for the same observation:
+  - `/sptgrid/analysis/calarchive/v5/calframe/<field>/<obsid>.g3`
+
+Structured output tree:
+
+- `/scratch/ajzhou/caliberated_data/data/<field>/<obsid>/`
+  - intermediate calibrated chunk(s):
+    - `0000_calibrated.g3`, `0001_calibrated.g3`, ...
+  - extracted products:
+    - `binned_tod_10arcmin/<chunk>_calibrated_scanXYZ.npz`
+
+Field-level run log from compact pipeline:
+
+- `/scratch/ajzhou/caliberated_data/data/<field>/_compact_progress.csv`
+
+## Calibration pipeline (verified)
+
+Calibration is implemented by `calibrate_downsampled_obs.py` and orchestrated by
+`calibrate_then_extract_compact.py`.
+
+Per chunk, the calibrated pipeline order is:
+
+1. `core.G3Reader` over:
+   - `calarchive/<field>/<obsid>.g3`
+   - `<obs_dir>/nominal_online_cal.g3`
+   - `<obs_dir>/<chunk>.g3`
+2. `ensure_bolometer_properties`:
+   - if a Calibration frame has `NominalBolometerProperties` but not
+     `BolometerProperties`, copy it to `BolometerProperties`
+3. Optional non-turn scan preselection:
+   - only used when `--nonturn-scan-indices` is provided
+4. `std_processing.DropWasteFrames` (includes turnaround removal behavior)
+5. `transients.balloons.BalloonAvoider`
+6. `timestreamflagging.PruneRawTimestreams`:
+   - input key: `RawTimestreams_I`
+   - output key: `DeflaggedRawTimestreams_I`
+7. `calibration.CalibrateRawTimestreams`:
+   - input key: `DeflaggedRawTimestreams_I`
+   - output key: `CalTimestreams`
+   - `opacity=True`, `kcmb=True`
+8. `pointing.UpdateBoresightPointing`:
+   - `pointing_key="OnlineRaDecRotation"`
+9. Optional `todfilter.TodFiltering` to `CalTimestreamsFiltered`:
+   - default is disabled (`WRITE_MINIMAL_FILTERED_TOD=False`)
+   - current filter defaults if enabled:
+     - `poly_order=1`
+     - `hpf_filter_frequency=-1.0` (disabled)
+     - `lpf_filter_frequency=-1.0` (disabled)
+10. `core.G3Writer` writes frame streams:
+    - `Observation`, `PipelineInfo`, `Wiring`, `Calibration`, `Scan`
+
+Compact-run defaults currently set in `calibrate_then_extract_compact.py`:
+
+- calibrate all non-turn scans: `CALIBRATE_NONTURN_SCAN_INDICES=None`
+- extract all non-turn scans: `EXTRACT_SCAN_INDICES=None`
+- delete calibrated intermediate `.g3`: `DELETE_CALIBRATED_G3=True`
+- keep skip flag enabled: `SKIP_IF_EXPECTED_OUTPUT_EXISTS=True`
+  - note: skip check is strict only when `EXTRACT_SCAN_INDICES` is an explicit list
 
 ## Verified `.g3` structure (example observation)
 
-Example directory:
+Example calibrated file pattern:
 
-- `/sptlocal/user/tcrawfor/for_reijo/spt3g_data/ra0hdec-59.75/79891185/`
+- `/scratch/ajzhou/caliberated_data/data/<field>/<obsid>/<chunk>_calibrated.g3`
 
-### `0001_calibrated.g3` (calibrated)
+### `<chunk>_calibrated.g3` (calibrated)
 
-Frame counts (verified):
+Frame streams written by the calibrator are fixed:
 
-- `Observation`: 1
-- `PipelineInfo`: 1
-- `Wiring`: 1
-- `Calibration`: 1
-- `Scan`: 8
+- `Observation`
+- `PipelineInfo`
+- `Wiring`
+- `Calibration`
+- `Scan`
+
+Actual frame counts vary by observation/chunk and are not hardcoded.
 
 #### Calibration frame
 
-Key items (verified):
+Key items required by extractor:
 
-- `BolometerProperties`: `spt3g.calibration.BolometerPropertiesMap` (n_det = 14266)
+- `BolometerProperties`: `spt3g.calibration.BolometerPropertiesMap`
   - keys are detector ids (`str`, e.g. `"2019.000"`)
-  - each value is `spt3g.calibration.BolometerProperties`; verified public fields include:
-    - `x_offset`, `y_offset` (angle-like values; focal-plane offsets in SPT3G angle units)
-    - `band`, `band_string`, `band_vstring`, `bandwidth`, `center_frequency`, `coupling`
-    - `physical_name`, `pixel_id`, `pixel_type`, `pol_angle`, `pol_efficiency`, `wafer_id`
-    - `Description`, `Summary`, `hash`
-  - `extract_binned_tod.py` uses **only** `x_offset`, `y_offset` and converts to arcmin via
-    `offset_arcmin = offset / core.G3Units.arcmin`
-
-Offset validity (verified):
-
-- In this file, not all `x_offset/y_offset` are finite:
-  - finite offsets: 11210 / 14266
-  - non-finite offsets: 3056 / 14266
+  - extractor uses only:
+    - `x_offset`, `y_offset`
+  - conversion used by extractor:
+    - `offset_arcmin = offset / core.G3Units.arcmin`
 
 #### Scan frames
 
-Key items used by `extract_binned_tod.py` (verified from this file):
+Required keys for extraction:
 
-- `CalTimestreams`: `spt3g.core.G3TimestreamMap`
-  - units: `Tcmb` (per-detector `G3Timestream.units`)
-  - in this file (all non-turnaround scans): `n_det = 11018`, `sample_rate = 152.587890625 Hz`
-  - `n_time` varies slightly across scans here: `15716` or `15717` samples, and always matches boresight/quaternion length
-- `OnlineBoresightRa`, `OnlineBoresightDec`: `spt3g.core.G3Timestream`
-  - stored in SPT3G angle units; the extractor converts to degrees via division by `core.G3Units.deg`
-- `OnlineRaDecRotation`: `spt3g.core.G3VectorQuat`, shape `(n_time, 4)`
-- `Turnaround` (optional): present and `True` on turnaround Scan frames, and absent on non-turnaround Scan frames
-  - the extractor drops any Scan with `bool(fr.get("Turnaround", False)) == True`
+- `CalTimestreams` (`TOD_KEY` default):
+  - type: `spt3g.core.G3TimestreamMap`
+  - extractor converts TOD to mK via division by `core.G3Units.mK`
+- `OnlineBoresightRa`, `OnlineBoresightDec`:
+  - boresight angle timestreams
+- `OnlineRaDecRotation`:
+  - quaternion timestream (shape `(n_time, 4)` when converted to ndarray)
+- `Turnaround` (optional flag):
+  - extractor drops any frame where `bool(fr.get("Turnaround", False))` is `True`
 
 ## Extracted binned `.npz` schema (`extract_binned_tod.py`)
 
-Per non-turnaround Scan frame, `extract_binned_tod.py` writes `outputs/extract_binned_tod_scanXYZ.npz` with:
+Per non-turnaround Scan frame, the extractor writes:
 
-- **Unit conventions (no SPT3G required downstream)**:
-  - angles: **degrees** (`*_deg`) or **arcmin** (`*_arcmin`)
-  - TOD: **mK** (`eff_tod_mk`)
-- **Raw detector metadata** (SPT3G-independent):
-  - `raw_bolos`: detector ids (`str`, e.g. `"2019.000"`), shape `(n_raw,)`
-  - `raw_offsets_arcmin`: focal-plane offsets in arcmin, shape `(n_raw, 2)` with columns `(x, y)`
-    - definition: `raw_offsets_arcmin[d] = (x_offset[d], y_offset[d]) / core.G3Units.arcmin`
-  - `raw_to_eff`: raw→effective mapping, shape `(n_raw,)` (`int64`)
-    - `raw_to_eff[d] = e` means raw detector `d` contributes to effective detector `e`
-  - `n_raw` meaning (verified for this file’s first non-turnaround scan):
-    - start from all detectors in `CalTimestreams` (`11018`)
-    - drop detectors with non-finite `(x_offset, y_offset)` (`10940` left)
-    - drop detectors with all-NaN TOD in the scan (`10938` left)
-- **Effective detector metadata** (focal-plane boxes of size `effective_box_arcmin × effective_box_arcmin`):
-  - `eff_counts`: number of raw detectors per effective detector, shape `(n_eff,)` (`int64`)
-    - definition: `eff_counts[e] = #{ d : raw_to_eff[d] = e }`
-  - `eff_box_index`: effective-detector focal-plane box indices, shape `(n_eff, 2)` (`int64`) with columns `(ix, iy)`
-    - let `Δ = effective_box_arcmin`, `x_min = focal_x_min_arcmin`, `y_min = focal_y_min_arcmin`
-    - let `nx = ceil((focal_x_max_arcmin - focal_x_min_arcmin) / Δ)`
-    - for each raw detector offset `(x_d, y_d)` (arcmin), define
-      - `ix_d = floor((x_d - x_min) / Δ)`
-      - `iy_d = floor((y_d - y_min) / Δ)`
-      - `cell_d = ix_d + nx * iy_d`
-    - each effective detector corresponds to one unique `(ix, iy)` pair; `eff_box_index[e] = (ix, iy)`
-  - `eff_offsets_arcmin`: effective-detector centroid offsets in arcmin, shape `(n_eff, 2)` with columns `(x, y)`
-    - definition (uniform average over detectors in the group):
-      - `eff_offsets_arcmin[e] = (1/eff_counts[e]) * Σ_{d: raw_to_eff[d]=e} raw_offsets_arcmin[d]`
-- **Binned time axis**:
-  - `t_bin_center_s`: seconds from scan start (bin centers), shape `(n_t,)` (`float64`)
-    - the code uses `n_samp_per_bin = round(bin_sec * sample_rate_hz)` and then
-      `t_bin_center_s[t] = (t + 0.5) * n_samp_per_bin / sample_rate_hz`
-- **Binned TOD (mK)**:
-  - `eff_tod_mk`: shape `(n_t, n_eff)` (`float32`)
-  - definition (uniform averages; NaNs ignored):
-    - let `tod_Tcmb[d, s]` be the calibrated TOD from `CalTimestreams` for raw detector `d` and sample `s`
-    - convert to mK: `tod_mk[d, s] = tod_Tcmb[d, s] / core.G3Units.mK`
-    - subtract per-detector scan mean: `tod0_mk[d, s] = tod_mk[d, s] - mean_s(tod_mk[d, s])` (NaNs ignored)
-    - time-bin per raw detector:
-      - `raw_bin_mk[t, d] = mean_{s in bin t}(tod0_mk[d, s])` (NaNs ignored)
-    - effective-detector bin (for each time bin `t`), averaging only the raw detectors with finite `raw_bin_mk[t, d]`:
-      - `eff_tod_mk[t, e] = mean_{d: raw_to_eff[d]=e}(raw_bin_mk[t, d])` (NaNs ignored)
-- **Binned pointing (degrees)**:
-  - `boresight_pos_deg`: shape `(n_t, 2)` (`float32`) with columns `(RA, Dec)`
-    - per time bin, it stores the arithmetic mean of `OnlineBoresightRa/Dec` over all samples in the bin
-    - before averaging, boresight RA is mapped to the continuous branch $[180, 540)$
-  - `eff_pos_deg`: shape `(n_t, n_eff, 2)` (`float32`) with columns `(RA, Dec)`
-    - per time bin, pointing is computed using the **mid-sample** quaternion in the bin (TOD uses all samples)
-    - per raw detector, the code calls `maps.get_detector_pointing(x_offset, y_offset, qbin, Equatorial)` and converts to degrees
-    - before averaging, detector RA is mapped to the continuous branch $[180, 540)$ (per detector, per time bin)
-    - verified: with `(x_offset, y_offset) = (0, 0)`, `maps.get_detector_pointing` matches `OnlineBoresightRa/Dec` at the same sample
-      (so detector pointing includes boresight and the full rotation in `OnlineRaDecRotation`)
-    - effective-detector centroid is a uniform average of the raw-detector sky positions in the group:
-      - `eff_pos_deg[t, e] = mean_{d: raw_to_eff[d]=e}(raw_pos_deg[t, d])` (component-wise; NaNs ignored)
-- **Pointing matrix** (global pixelization anchored at (0,0)):
-  - `pixel_size_deg`: scalar (`float`)
-  - `pix_index`: integer pixel indices, shape `(n_t, n_eff, 2)` (`int64`) with columns `(ix, iy)`
-    - definition: `pix_index[...,0] = floor(eff_pos_deg[...,0] / pixel_size_deg)`,
-      `pix_index[...,1] = floor(eff_pos_deg[...,1] / pixel_size_deg)`
-    - indices may be negative
-- **Parameters / provenance**:
+- `/scratch/ajzhou/caliberated_data/data/<field>/<obsid>/binned_tod_10arcmin/<chunk>_calibrated_scanXYZ.npz`
+
+with:
+
+- **Unit conventions (SPT3G-independent downstream)**
+  - angles: degrees (`*_deg`) or arcmin (`*_arcmin`)
+  - TOD: mK (`eff_tod_mk`)
+
+- **Raw detector metadata**
+  - `raw_bolos`: detector ids, shape `(n_raw,)`
+  - `raw_offsets_arcmin`: shape `(n_raw, 2)` with columns `(x, y)`
+  - `raw_to_eff`: raw-to-effective detector map, shape `(n_raw,)`
+
+- **Effective detector metadata**
+  - `eff_offsets_arcmin`: effective detector centroid offsets, shape `(n_eff, 2)`
+  - `eff_counts`: raw detector counts per effective detector, shape `(n_eff,)`
+  - `eff_box_index`: integer focal-plane box index `(ix, iy)`, shape `(n_eff, 2)`
+  - grouping hyperparameters:
+    - `EFFECTIVE_BOX_ARCMIN = 5.0`
+    - `FOCAL_X_MIN_ARCMIN = -80.0`, `FOCAL_X_MAX_ARCMIN = 80.0`
+    - `FOCAL_Y_MIN_ARCMIN = -60.0`, `FOCAL_Y_MAX_ARCMIN = 60.0`
+
+- **Time axis**
+  - `t_bin_center_s`: shape `(n_t,)`
+  - `BIN_SEC = 0.1`
+  - `n_samp_per_bin = round(BIN_SEC * sample_rate_hz)`, with minimum 1
+
+- **Binned TOD**
+  - `eff_tod_mk`: shape `(n_t, n_eff)`
+  - preprocessing before binning:
+    - detector-wise polynomial subtraction with
+      `REMOVE_TIME_POLYNOMIAL_ORDER = 1`
+    - NaNs are ignored in averaging operations
+
+- **Binned pointing**
+  - `boresight_pos_deg`: shape `(n_t, 2)`
+  - `eff_pos_deg`: shape `(n_t, n_eff, 2)`
+  - `USE_RAW_DETECTOR_POINTING = False`:
+    - effective pointing is computed from `eff_offsets_arcmin` and mid-bin quaternion
+    - call path uses `maps.get_detector_pointing(...)` per effective detector, per time bin
+
+- **Pixel indices**
+  - `pix_index`: shape `(n_t, n_eff, 2)`
+  - `pixel_size_deg = PIXEL_SIZE_ARCMIN / 60.0`
+  - `pix_index[...,0] = floor(eff_pos_deg[...,0] / pixel_size_deg)`
+  - `pix_index[...,1] = floor(eff_pos_deg[...,1] / pixel_size_deg)`
+
+- **Provenance fields written in each npz**
   - `bin_sec`, `sample_rate_hz`, `pixel_size_deg`
-  - `effective_box_arcmin`, `focal_x_min_arcmin`, `focal_x_max_arcmin`, `focal_y_min_arcmin`, `focal_y_max_arcmin`
-  - `tod_key` (always `"CalTimestreams"`), `tod_units` (always `"mK"`)
+  - `effective_box_arcmin`
+  - `focal_x_min_arcmin`, `focal_x_max_arcmin`
+  - `focal_y_min_arcmin`, `focal_y_max_arcmin`
+  - `tod_units` (string `"mK"`)
+  - `tod_key` (string, default `"CalTimestreams"`)
   - `obs_dir`, `g3_file`
 
 ## RA convention (continuous branch)
 
-RA is an angle defined modulo $360^\circ$. For SPT, we want a *continuous* RA coordinate that does not jump at $0/360$.
-Since the relevant SPT footprint spans roughly RA $300^\circ \to 105^\circ$ (crossing 0), we adopt a fixed convention:
+RA is periodic modulo $360^\circ$. The extractor stores RA on a continuous branch
+$[180, 540)$:
 
-- **Store all RA in degrees on the branch $[180, 540)$** by mapping:
-  - `ra = ra % 360`
-  - `ra = ra + 360` if `ra < 180`
+- `ra = ra % 360`
+- if `ra < 180`, set `ra = ra + 360`
 
-This turns values like `359.9, 0.1` into `359.9, 360.1`, preserving continuity for averaging and for pixelization.
+This mapping is applied before RA averaging and before pixel-index construction.

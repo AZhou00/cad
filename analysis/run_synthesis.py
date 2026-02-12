@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Per-scan real-data reconstruction using `cad` (open-boundary frozen-screen model).
+Run multi-scan synthesis (combined reconstruction) using `cad`.
 
 Inputs:
   - A dataset directory under `cad/data/<dataset_dir>/`.
@@ -9,7 +9,10 @@ Supported layout (organized by observation id):
   `cad/data/<dataset_dir>/<obs_id>/binned_tod_*/<scan>.npz`
 
 Outputs:
-  - `cad/data/<dataset_dir>_recon/<field_id>/recon_scanXXX_<ml|map>.npz`
+  - Per observation:
+      `cad/data/<dataset_dir>_recon/<field_id>/recon_combined_<ml|map>.npz`
+  - All observations combined:
+      `cad/data/<dataset_dir>_recon/recon_<ml|map>.npz`
 """
 
 from __future__ import annotations
@@ -30,7 +33,6 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent
 CAD_DIR = BASE_DIR.parent
 DATA_DIR = CAD_DIR / "data"
 
-#TODO: The only preprocessing improvement I’d consider is storing a dec_ref (e.g., median boresight Dec per scan) in the NPZ, so the prior’s cos_dec can be set from the actual scan geometry rather than inferred from the bbox center. This is optional and not required for correctness.
 
 @dataclass(frozen=True)
 class Config:
@@ -83,8 +85,6 @@ def _discover_scan_paths(*, field_dir: pathlib.Path, cfg: Config) -> list[pathli
 
 def _load_scan(npz_path: pathlib.Path) -> dict:
     with np.load(npz_path, allow_pickle=False) as z:
-        # Keep the original schema; we will mask detectors later but keep the wind mask
-        # in the outputs for focal-plane diagnostics.
         return dict(
             eff_tod_mk=np.asarray(z["eff_tod_mk"], dtype=np.float32),  # (n_t,n_eff)
             pix_index=np.asarray(z["pix_index"], dtype=np.int64),  # (n_t,n_eff,2)
@@ -96,34 +96,20 @@ def _load_scan(npz_path: pathlib.Path) -> dict:
             eff_offsets_arcmin=np.asarray(z["eff_offsets_arcmin"], dtype=np.float64),  # (n_eff,2)
             bin_sec=float(z["bin_sec"]),
             sample_rate_hz=float(z["sample_rate_hz"]),
-            # focal plane metadata (for plotting)
-            focal_x_min_arcmin=float(z["focal_x_min_arcmin"]),
-            focal_x_max_arcmin=float(z["focal_x_max_arcmin"]),
-            focal_y_min_arcmin=float(z["focal_y_min_arcmin"]),
-            focal_y_max_arcmin=float(z["focal_y_max_arcmin"]),
-            effective_box_arcmin=float(z["effective_box_arcmin"]),
         )
 
 
-def _run_field(
-    *,
-    field_id: str,
-    scan_paths: list[pathlib.Path],
-    out_dir: pathlib.Path,
-    mode: str,
-    cfg: Config,
-) -> None:
+def _prepare_synthesis_inputs(*, label: str, scan_paths: list[pathlib.Path], mode: str, cfg: Config) -> dict:
     scans0 = [_load_scan(p) for p in scan_paths]
     pixel_size_deg0 = float(scans0[0]["pixel_size_deg"])
     for s in scans0[1:]:
         if abs(float(s["pixel_size_deg"]) - pixel_size_deg0) > 1e-12:
-            raise ValueError(f"[{field_id}] pixel_size_deg mismatch across scans.")
+            raise ValueError(f"[{label}] pixel_size_deg mismatch across scans.")
 
-    print(f"[field] {field_id}: n_scans={len(scan_paths)}  mode={mode}", flush=True)
+    print(f"[group] {label}: n_scans={len(scan_paths)}  mode={mode}", flush=True)
 
     # --- wind estimation on unmasked scans ---
     winds = np.zeros((len(scans0), 2), dtype=np.float64)
-    wind_diags: list[dict] = []
     masks_good: list[np.ndarray] = []
     for i, s in enumerate(scans0):
         w_x, w_y, diag, mask = cad.estimate_wind_deg_per_s(
@@ -135,10 +121,9 @@ def _run_field(
             physical_degree=False,
         )
         winds[i, :] = (float(w_x), float(w_y))
-        wind_diags.append(diag)
         masks_good.append(np.asarray(mask, dtype=bool))
         print(
-            f"[wind] scan{i:03d} w=({w_x:.4f},{w_y:.4f}) deg/s  "
+            f"[wind] {label} scan{i:03d} w=({w_x:.4f},{w_y:.4f}) deg/s  "
             f"sigma=({diag['wind_sigma_x_deg_per_s']:.4f},{diag['wind_sigma_y_deg_per_s']:.4f})  "
             f"snr_mag={diag['wind_snr_mag']:.2f}  "
             f"rms={diag['resid_rms_mk_per_s']:.3f} mK/s  good={int(mask.sum())}/{int(mask.size)}",
@@ -181,14 +166,14 @@ def _run_field(
         cl_cmb_bins_mk2 = np.full_like(ell_centers, float(cfg.cl_floor_mk2), dtype=np.float64)
     cl_cmb_bins_mk2 = np.maximum(cl_cmb_bins_mk2, float(cfg.cl_floor_mk2))
 
-    # --- apply bad pixel masking (use mask_good per scan) ---
+    # --- apply bad pixel masking ---
     scans = []
     for i, s in enumerate(scans0):
         msk = masks_good[i]
         if int(msk.size) != int(s["eff_tod_mk"].shape[1]):
             raise RuntimeError("Internal error: mask_good length mismatch.")
         if int(msk.size - msk.sum()) > 0:
-            print(f"[mask] scan{i:03d}: dropped {int(msk.size-msk.sum())}/{int(msk.size)} detectors", flush=True)
+            print(f"[mask] {label} scan{i:03d}: dropped {int(msk.size-msk.sum())}/{int(msk.size)} detectors", flush=True)
         s2 = dict(s)
         s2["eff_tod_mk"] = np.asarray(s["eff_tod_mk"])[:, msk]
         s2["pix_index"] = np.asarray(s["pix_index"], dtype=np.int64)[:, msk, :]
@@ -208,133 +193,76 @@ def _run_field(
         )
         scans_noise.append(sig)
         print(
-            f"[noise] scan{i:03d}: sigma_eff median={float(np.median(sig)):.3f} mK  min={float(np.min(sig)):.3f}  max={float(np.max(sig)):.3f}",
+            f"[noise] {label} scan{i:03d}: sigma_eff median={float(np.median(sig)):.3f} mK  "
+            f"min={float(np.min(sig)):.3f}  max={float(np.max(sig)):.3f}",
             flush=True,
         )
 
-    # --- shared CMB solve grid and observed-set basis for per-scan solves ---
-    boxes_cmb = []
-    for s in scans:
-        valid = np.isfinite(s["eff_tod_mk"])
-        boxes_cmb.append(map_util.scan_bbox_from_pix_index(pix_index=s["pix_index"], valid_mask=valid))
-    bbox_cmb = map_util.bbox_union(boxes_cmb)
+    return dict(
+        scans=scans,
+        winds=winds,
+        pixel_size_deg=float(pixel_size_deg0),
+        ell_centers=np.asarray(ell_centers, dtype=np.float64),
+        cl_atm_bins_mk2=np.asarray(cl_atm_bins_mk2, dtype=np.float64),
+        cl_cmb_bins_mk2=np.asarray(cl_cmb_bins_mk2, dtype=np.float64),
+        scans_noise=[np.asarray(sig, dtype=np.float64) for sig in scans_noise],
+    )
+
+
+def _run_synthesis_group(
+    *,
+    label: str,
+    scan_paths: list[pathlib.Path],
+    out_path: pathlib.Path,
+    mode: str,
+    cfg: Config,
+) -> None:
+    prep = _prepare_synthesis_inputs(label=label, scan_paths=scan_paths, mode=mode, cfg=cfg)
+
+    combined = cad.synthesize_scans(
+        scans_tod_mk=[np.asarray(s["eff_tod_mk"], dtype=np.float64) for s in prep["scans"]],
+        scans_pix_index=[np.asarray(s["pix_index"], dtype=np.int64) for s in prep["scans"]],
+        scans_t_s=[np.asarray(s["t_s"], dtype=np.float64) for s in prep["scans"]],
+        winds_deg_per_s=[(float(w[0]), float(w[1])) for w in prep["winds"]],
+        scans_noise_std_det_mk=[np.asarray(sig, dtype=np.float64) for sig in prep["scans_noise"]],
+        pixel_size_deg=float(prep["pixel_size_deg"]),
+        cl_atm_bins_mk2=np.asarray(prep["cl_atm_bins_mk2"], dtype=np.float64),
+        cl_cmb_bins_mk2=np.asarray(prep["cl_cmb_bins_mk2"], dtype=np.float64),
+        estimator_mode=mode,
+        cl_floor_mk2=float(cfg.cl_floor_mk2),
+        min_hits_per_pix=int(cfg.min_hits_per_pix),
+        cg_tol=float(cfg.cg_tol),
+        cg_maxiter=int(cfg.cg_maxiter),
+    )
+
+    bbox_cmb = combined.bbox_cmb
     nx = int(bbox_cmb.nx)
     ny = int(bbox_cmb.ny)
     n_pix = int(nx * ny)
+    obs_pix_global = np.asarray(combined.obs_pix_cmb, dtype=np.int64)
 
-    pointing_mats = []
-    valid_masks = []
-    for s in scans:
-        pm, vm = util.pointing_from_pix_index(
-            pix_index=np.asarray(s["pix_index"], dtype=np.int64),
-            tod_mk=np.asarray(s["eff_tod_mk"], dtype=np.float64),
-            bbox=bbox_cmb,
-        )
-        pointing_mats.append(pm)
-        valid_masks.append(vm)
-
-    if mode == "MAP":
-        obs_pix_global = np.arange(n_pix, dtype=np.int64)
-        global_to_obs = np.arange(n_pix, dtype=np.int64)
-    else:
-        obs_pix_global, global_to_obs = util.observed_pixel_index_set(
-            pointing_matrices=pointing_mats,
-            valid_masks=valid_masks,
-            n_pix=n_pix,
-            min_hits_per_pix=int(cfg.min_hits_per_pix),
-        )
-        if int(obs_pix_global.size) == 0:
-            raise RuntimeError(
-                f"[{field_id}] No observed pixels survive min_hits_per_pix={int(cfg.min_hits_per_pix)}. "
-                "Lower min_hits_per_pix or check input scans."
-            )
-
+    out_payload = dict(
+        estimator_mode=np.array(mode),
+        pixel_size_deg=np.float64(prep["pixel_size_deg"]),
+        bbox_ix0=np.int64(bbox_cmb.ix0),
+        bbox_iy0=np.int64(bbox_cmb.iy0),
+        nx=np.int64(nx),
+        ny=np.int64(ny),
+        winds_deg_per_s=np.asarray(prep["winds"], dtype=np.float64),
+        obs_pix_global=np.asarray(obs_pix_global, dtype=np.int64),
+        c_hat_full_mk=np.asarray(combined.c_hat_full_mk, dtype=np.float64),
+        ell_centers=np.asarray(prep["ell_centers"], dtype=np.float64),
+        cl_atm_bins_mk2=np.asarray(prep["cl_atm_bins_mk2"], dtype=np.float64),
+        cl_cmb_bins_mk2=np.asarray(prep["cl_cmb_bins_mk2"], dtype=np.float64),
+        boundary=np.array("open"),
+        n_scans=np.int64(len(scan_paths)),
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_path, **out_payload)
     print(
-        f"[grid] field={field_id} bbox_cmb ix=[{bbox_cmb.ix0},{bbox_cmb.ix1}] iy=[{bbox_cmb.iy0},{bbox_cmb.iy1}] "
-        f"nx={nx} ny={ny} n_pix={n_pix} n_obs={int(obs_pix_global.size)}",
+        f"[write] {out_path}  [group={label} mode={mode} n_scans={len(scan_paths)} n_obs={int(obs_pix_global.size)} n_pix={n_pix}]",
         flush=True,
     )
-
-    # Calculate cos_dec from bbox_cmb center.
-    iy_mid = (float(bbox_cmb.iy0) + float(bbox_cmb.iy1)) / 2.0
-    dec_deg = iy_mid * float(pixel_size_deg0)
-    cos_dec = float(np.cos(np.deg2rad(dec_deg)))
-
-    prior_cmb = cad.FourierGaussianPrior(
-        nx=int(bbox_cmb.nx),
-        ny=int(bbox_cmb.ny),
-        pixel_res_rad=pixel_res_rad,
-        cl_bins_mk2=np.asarray(cl_cmb_bins_mk2, dtype=np.float64),
-        cos_dec=cos_dec,
-        cl_floor_mk2=float(cfg.cl_floor_mk2),
-    )
-
-    for i, s in enumerate(scans):
-        valid_i = np.isfinite(s["eff_tod_mk"])
-        bbox_obs_i = map_util.scan_bbox_from_pix_index(pix_index=np.asarray(s["pix_index"], dtype=np.int64), valid_mask=valid_i)
-        bbox_atm_i = util.bbox_pad_for_open_boundary(
-            bbox_obs=bbox_obs_i,
-            scans_pix_index=[np.asarray(s["pix_index"], dtype=np.int64)],
-            scans_tod_mk=[np.asarray(s["eff_tod_mk"], dtype=np.float64)],
-            scans_t_s=[np.asarray(s["t_s"], dtype=np.float64)],
-            winds_deg_per_s=[(float(winds[i, 0]), float(winds[i, 1]))],
-            pixel_size_deg=float(pixel_size_deg0),
-        )
-        prior_atm_i = cad.FourierGaussianPrior(
-            nx=int(bbox_atm_i.nx),
-            ny=int(bbox_atm_i.ny),
-            pixel_res_rad=pixel_res_rad,
-            cl_bins_mk2=np.asarray(cl_atm_bins_mk2, dtype=np.float64),
-            cos_dec=cos_dec,
-            cl_floor_mk2=float(cfg.cl_floor_mk2),
-        )
-
-        sol = cad.reconstruct_scan.solve_single_scan(
-            tod_mk=np.asarray(s["eff_tod_mk"], dtype=np.float64),
-            pix_index=np.asarray(s["pix_index"], dtype=np.int64),
-            t_s=np.asarray(s["t_s"], dtype=np.float64),
-            pixel_size_deg=float(pixel_size_deg0),
-            wind_deg_per_s=(float(winds[i, 0]), float(winds[i, 1])),
-            noise_std_det_mk=np.asarray(scans_noise[i], dtype=np.float64),
-            prior_atm=prior_atm_i,
-            prior_cmb=prior_cmb,
-            bbox_cmb=bbox_cmb,
-            bbox_atm=bbox_atm_i,
-            obs_pix_cmb=obs_pix_global,
-            global_to_obs_cmb=global_to_obs,
-            estimator_mode=mode,
-            n_scans=int(len(scans)),
-            cl_floor_mk2=float(cfg.cl_floor_mk2),
-            cg_tol=float(cfg.cg_tol),
-            cg_maxiter=max(200, int(cfg.cg_maxiter // 2)),
-        )
-
-        out_path = out_dir / f"recon_scan{i:03d}_{mode.lower()}.npz"
-        diag = wind_diags[i]
-        out_payload = dict(
-            scan_index=np.int64(i),
-            estimator_mode=np.array(mode),
-            pixel_size_deg=np.float64(pixel_size_deg0),
-            bbox_ix0=np.int64(bbox_cmb.ix0),
-            bbox_iy0=np.int64(bbox_cmb.iy0),
-            nx=np.int64(nx),
-            ny=np.int64(ny),
-            wind_deg_per_s=np.asarray(winds[i], dtype=np.float64),
-            wind_valid_mask=np.asarray(masks_good[i], dtype=bool),
-            wind_resid_rms_mk_per_s=np.float64(diag["resid_rms_mk_per_s"]),
-            wind_sigma_x_deg_per_s=np.float64(diag["wind_sigma_x_deg_per_s"]),
-            wind_sigma_y_deg_per_s=np.float64(diag["wind_sigma_y_deg_per_s"]),
-            wind_snr_mag=np.float64(diag["wind_snr_mag"]),
-            noise_per_raw_detector_per_153hz_sample_mk=np.float64(cfg.noise_per_raw_detector_per_153hz_sample_mk),
-            obs_pix_global=np.asarray(obs_pix_global, dtype=np.int64),
-            c_hat_full_mk=np.asarray(sol.c_hat_full_mk, dtype=np.float64),
-            ell_centers=np.asarray(ell_centers, dtype=np.float64),
-            cl_atm_bins_mk2=np.asarray(cl_atm_bins_mk2, dtype=np.float64),
-            cl_cmb_bins_mk2=np.asarray(cl_cmb_bins_mk2, dtype=np.float64),
-            boundary=np.array("open"),
-        )
-        np.savez_compressed(out_path, **out_payload)
-        print(f"[write] {out_path}", flush=True)
 
 
 def main(cfg: Config) -> None:
@@ -356,14 +284,22 @@ def main(cfg: Config) -> None:
             "Expected layout: <dataset>/<obs_id>/binned_tod_*/<scan>.npz"
         )
 
+    all_scan_paths: list[pathlib.Path] = []
     for field_id, field_in_dir in fields:
         scan_paths = _discover_scan_paths(field_dir=field_in_dir, cfg=cfg)
         if len(scan_paths) == 0:
             print(f"[skip] field {field_id}: no scan NPZs found under {field_in_dir}", flush=True)
             continue
-        out_dir = out_root / str(field_id)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        _run_field(field_id=str(field_id), scan_paths=scan_paths, out_dir=out_dir, mode=mode, cfg=cfg)
+        out_path = out_root / str(field_id) / f"recon_combined_{mode.lower()}.npz"
+        _run_synthesis_group(label=str(field_id), scan_paths=scan_paths, out_path=out_path, mode=mode, cfg=cfg)
+        all_scan_paths.extend(scan_paths)
+
+    if len(all_scan_paths) == 0:
+        raise RuntimeError(f"No scan NPZ files discovered under dataset: {dataset_dir}")
+
+    # Synthesis over all scans from all observations in this dataset.
+    out_all = out_root / f"recon_{mode.lower()}.npz"
+    _run_synthesis_group(label="all_observations", scan_paths=all_scan_paths, out_path=out_all, mode=mode, cfg=cfg)
 
 
 if __name__ == "__main__":
