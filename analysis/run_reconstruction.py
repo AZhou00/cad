@@ -3,11 +3,14 @@
 End-to-end real-data reconstruction using `cad` (open-boundary frozen-screen model).
 
 Inputs:
-  - SPT binned scan NPZs under `cad/data/<outputs_dir>/extract_binned_tod_scanXXX.npz`
+  - A dataset directory under `cad/data/<dataset_dir>/`.
 
-Outputs (all under analysis/output):
-  - `cad/analysis/output/reconstruction_<pixTag>_<ml|map>/recon_scanXXX.npz`
-  - `cad/analysis/output/reconstruction_<pixTag>_<ml|map>/recon_combined_<ml|map>.npz`
+Supported layout (organized by observation id):
+  `cad/data/<dataset_dir>/<obs_id>/binned_tod_*/<scan>.npz`
+
+Outputs:
+  - `cad/data/<dataset_dir>_recon/<field_id>/recon_combined_<ml|map>.npz`
+  - `cad/data/<dataset_dir>_recon/<field_id>/recon_scanXXX_<ml|map>.npz`
 """
 
 from __future__ import annotations
@@ -27,13 +30,12 @@ from cad import util
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 CAD_DIR = BASE_DIR.parent
 DATA_DIR = CAD_DIR / "data"
-OUT_BASE = BASE_DIR / "output"
 
 #TODO: The only preprocessing improvement I’d consider is storing a dec_ref (e.g., median boresight Dec per scan) in the NPZ, so the prior’s cos_dec can be set from the actual scan geometry rather than inferred from the bbox center. This is optional and not required for correctness.
 
 @dataclass(frozen=True)
 class Config:
-    outputs_dir: str | None = None
+    dataset_dir: str | None = None
     estimator_mode: str = "ML"  # 'ML' or 'MAP'
     n_ell_bins: int = 128
     cl_floor_mk2: float = 1e-12
@@ -41,6 +43,43 @@ class Config:
     cg_tol: float = 5e-4
     cg_maxiter: int = 1200
     noise_per_raw_detector_per_153hz_sample_mk: float = 10.0
+    prefer_binned_subdir: str = "binned_tod_10arcmin"
+
+
+def _discover_fields(dataset_dir: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
+    """
+    Return [(field_id, field_input_dir)].
+
+    Multi-field convention: subdirectories named with digits are treated as obs ids.
+    Otherwise, treat the dataset directory itself as a single field.
+    """
+    subdirs = [p for p in dataset_dir.iterdir() if p.is_dir()]
+    obs = sorted([p for p in subdirs if re.fullmatch(r"\d+", p.name)], key=lambda p: p.name)
+    return [(p.name, p) for p in obs]
+
+
+def _discover_scan_paths(*, field_dir: pathlib.Path, cfg: Config) -> list[pathlib.Path]:
+    """
+    Return sorted scan NPZ paths for a field directory.
+
+    Supports:
+      - binned_tod_*/ subdirectories under field_dir
+    """
+    binned_dirs = sorted([p for p in field_dir.iterdir() if p.is_dir() and p.name.startswith("binned_tod_")])
+    if len(binned_dirs) == 0:
+        return []
+
+    prefer = str(cfg.prefer_binned_subdir)
+    chosen = None
+    for p in binned_dirs:
+        if p.name == prefer:
+            chosen = p
+            break
+    if chosen is None:
+        chosen = binned_dirs[0]
+
+    scan_paths = sorted([p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")])
+    return scan_paths
 
 
 def _load_scan(npz_path: pathlib.Path) -> dict:
@@ -94,27 +133,21 @@ def _print_cl_comparison(
     )
 
 
-def main(cfg: Config) -> None:
-    mode = str(cfg.estimator_mode).upper()
-    if mode not in ("ML", "MAP"):
-        raise ValueError("estimator_mode must be 'ML' or 'MAP'.")
-
-    outputs_dir = DATA_DIR / str(cfg.outputs_dir)
-    scan_paths = sorted(outputs_dir.glob("extract_binned_tod_scan*.npz"))
-    if len(scan_paths) == 0:
-        raise RuntimeError(f"No scan NPZs found under {outputs_dir}.")
-
+def _run_field(
+    *,
+    field_id: str,
+    scan_paths: list[pathlib.Path],
+    out_dir: pathlib.Path,
+    mode: str,
+    cfg: Config,
+) -> None:
     scans0 = [_load_scan(p) for p in scan_paths]
     pixel_size_deg0 = float(scans0[0]["pixel_size_deg"])
     for s in scans0[1:]:
         if abs(float(s["pixel_size_deg"]) - pixel_size_deg0) > 1e-12:
-            raise ValueError("pixel_size_deg mismatch across scans.")
+            raise ValueError(f"[{field_id}] pixel_size_deg mismatch across scans.")
 
-    outputs_dir_name = pathlib.Path(str(cfg.outputs_dir)).name
-    m = re.fullmatch(r"outputs_(.+)", outputs_dir_name)
-    pix_tag = m.group(1) if m is not None else outputs_dir_name
-    out_dir = OUT_BASE / f"reconstruction_{pix_tag}_{mode.lower()}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[field] {field_id}: n_scans={len(scan_paths)}  mode={mode}", flush=True)
 
     # --- wind estimation on unmasked scans ---
     winds = np.zeros((len(scans0), 2), dtype=np.float64)
@@ -173,7 +206,6 @@ def main(cfg: Config) -> None:
     if mode == "MAP":
         cl_cmb_bins_mk2 = np.asarray(power.cmb_power_spectrum(ell_centers), dtype=np.float64)
     else:
-        # ML: CMB prior unused; keep for metadata only.
         cl_cmb_bins_mk2 = np.full_like(ell_centers, float(cfg.cl_floor_mk2), dtype=np.float64)
     cl_cmb_bins_mk2 = np.maximum(cl_cmb_bins_mk2, float(cfg.cl_floor_mk2))
 
@@ -254,7 +286,7 @@ def main(cfg: Config) -> None:
     global_to_obs = -np.ones((n_pix,), dtype=np.int64)
     global_to_obs[obs_pix_global] = np.arange(int(obs_pix_global.size), dtype=np.int64)
 
-    # Calculate cos_dec from bbox_cmb center
+    # Calculate cos_dec from bbox_cmb center.
     iy_mid = (float(bbox_cmb.iy0) + float(bbox_cmb.iy1)) / 2.0
     dec_deg = iy_mid * float(pixel_size_deg0)
     cos_dec = float(np.cos(np.deg2rad(dec_deg)))
@@ -269,7 +301,6 @@ def main(cfg: Config) -> None:
     )
 
     for i, s in enumerate(scans):
-        # Per-scan atmosphere bbox: depends only on this scan's geometry (not other scans).
         valid_i = np.isfinite(s["eff_tod_mk"])
         bbox_obs_i = map_util.scan_bbox_from_pix_index(pix_index=np.asarray(s["pix_index"], dtype=np.int64), valid_mask=valid_i)
         bbox_atm_i = util.bbox_pad_for_open_boundary(
@@ -309,7 +340,7 @@ def main(cfg: Config) -> None:
             cg_maxiter=max(200, int(cfg.cg_maxiter // 2)),
         )
 
-        out_path = out_dir / f"recon_scan{i:03d}.npz"
+        out_path = out_dir / f"recon_scan{i:03d}_{mode.lower()}.npz"
         diag = wind_diags[i]
         out_payload = dict(
             scan_index=np.int64(i),
@@ -339,7 +370,7 @@ def main(cfg: Config) -> None:
     # --- numeric Cl comparison: coadd vs combined reconstruction (same bbox_cmb) ---
     bbox_cmb_map = map_util.BBox(ix0=bbox_cmb.ix0, ix1=bbox_cmb.ix1, iy0=bbox_cmb.iy0, iy1=bbox_cmb.iy1)
     coadd_cmb_mk_masked, hit_cmb_2d_masked = map_util.coadd_map_global(
-        scans_eff_tod_mk=[s["eff_tod_mk"] for s in scans],  # masked (matches reconstruction inputs)
+        scans_eff_tod_mk=[s["eff_tod_mk"] for s in scans],
         scans_pix_index=[s["pix_index"] for s in scans],
         bbox=bbox_cmb_map,
     )
@@ -352,7 +383,7 @@ def main(cfg: Config) -> None:
     )
 
     coadd_cmb_mk_unmasked, hit_cmb_2d_unmasked = map_util.coadd_map_global(
-        scans_eff_tod_mk=[s["eff_tod_mk"] for s in scans0],  # unmasked (for reference)
+        scans_eff_tod_mk=[s["eff_tod_mk"] for s in scans0],
         scans_pix_index=[s["pix_index"] for s in scans0],
         bbox=bbox_cmb_map,
     )
@@ -364,27 +395,56 @@ def main(cfg: Config) -> None:
         n_ell_bins=int(cfg.n_ell_bins),
     )
 
-    # Combined map is a vector on bbox_cmb.
-    c2 = np.asarray(combined.c_hat_full_mk, dtype=np.float64).reshape(nx, ny).T  # (ny,nx)
+    c2 = np.asarray(combined.c_hat_full_mk, dtype=np.float64).reshape(nx, ny).T
     _, cl_recon = power.radial_cl_1d_from_map(
         map_2d_mk=c2,
         pixel_res_rad=pixel_res_rad,
         hit_mask=hit_cmb_mask_masked,
         n_ell_bins=int(cfg.n_ell_bins),
     )
-    print(f"[grid] bbox_cmb ix=[{bbox_cmb.ix0},{bbox_cmb.ix1}] iy=[{bbox_cmb.iy0},{bbox_cmb.iy1}] nx={nx} ny={ny} n_pix={n_pix}", flush=True)
+    print(
+        f"[grid] bbox_cmb ix=[{bbox_cmb.ix0},{bbox_cmb.ix1}] iy=[{bbox_cmb.iy0},{bbox_cmb.iy1}] nx={nx} ny={ny} n_pix={n_pix}",
+        flush=True,
+    )
     _print_cl_comparison(label_a="coadd(masked)", cl_a=cl_coadd_masked, label_b="coadd(unmasked)", cl_b=cl_coadd_unmasked, ell=ell, ell_min=50, ell_max=3000)
     _print_cl_comparison(label_a="recon", cl_a=cl_recon, label_b="coadd(masked)", cl_b=cl_coadd_masked, ell=ell, ell_min=50, ell_max=300)
     _print_cl_comparison(label_a="recon", cl_a=cl_recon, label_b="coadd(masked)", cl_b=cl_coadd_masked, ell=ell, ell_min=300, ell_max=1000)
     _print_cl_comparison(label_a="recon", cl_a=cl_recon, label_b="coadd(masked)", cl_b=cl_coadd_masked, ell=ell, ell_min=1000, ell_max=3000)
 
 
-if __name__ == "__main__":
-    # Default: run the combined dataset (two overlapping scan-sets).
-    # for outputs_dir in ("outputs_10arcmin", "outputs_10arcmin_bad"):
-    #     for estimator_mode in ("ML", "MAP"):
-    #         main(Config(outputs_dir=str(outputs_dir), estimator_mode=str(estimator_mode)))
+def main(cfg: Config) -> None:
+    mode = str(cfg.estimator_mode).upper()
+    if mode not in ("ML", "MAP"):
+        raise ValueError("estimator_mode must be 'ML' or 'MAP'.")
 
+    dataset_dir = DATA_DIR / str(cfg.dataset_dir)
+    if not dataset_dir.exists():
+        raise RuntimeError(f"Dataset directory does not exist: {dataset_dir}")
+
+    out_root = dataset_dir.parent / f"{dataset_dir.name}_recon"
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    fields = _discover_fields(dataset_dir)
+    if len(fields) == 0:
+        raise RuntimeError(
+            f"No obs-id subdirectories found under {dataset_dir}. "
+            "Expected layout: <dataset>/<obs_id>/binned_tod_*/<scan>.npz"
+        )
+
+    for field_id, field_in_dir in fields:
+        scan_paths = _discover_scan_paths(field_dir=field_in_dir, cfg=cfg)
+        if len(scan_paths) == 0:
+            print(f"[skip] field {field_id}: no scan NPZs found under {field_in_dir}", flush=True)
+            continue
+        out_dir = out_root / str(field_id)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _run_field(field_id=str(field_id), scan_paths=scan_paths, out_dir=out_dir, mode=mode, cfg=cfg)
+
+
+if __name__ == "__main__":
+    import sys
+
+    dataset = sys.argv[1] if len(sys.argv) >= 2 else "ra0hdec-59.75"
     for estimator_mode in ("ML", "MAP"):
-        main(Config(outputs_dir="outputs_10arcmin_combined", estimator_mode=str(estimator_mode)))
+        main(Config(dataset_dir=str(dataset), estimator_mode=str(estimator_mode)))
 
