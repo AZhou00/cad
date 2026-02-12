@@ -29,6 +29,7 @@ CAD_DIR = BASE_DIR.parent
 DATA_DIR = CAD_DIR / "data"
 OUT_BASE = BASE_DIR / "output"
 
+#TODO: The only preprocessing improvement I’d consider is storing a dec_ref (e.g., median boresight Dec per scan) in the NPZ, so the prior’s cos_dec can be set from the actual scan geometry rather than inferred from the bbox center. This is optional and not required for correctness.
 
 @dataclass(frozen=True)
 class Config:
