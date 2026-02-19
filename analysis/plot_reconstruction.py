@@ -307,7 +307,7 @@ def _discover_obs_entries(dataset_dir: pathlib.Path) -> list[tuple[str, pathlib.
     return [(str(dataset_dir.name), dataset_dir)]
 
 
-def _discover_scan_paths(*, obs_dir: pathlib.Path) -> list[pathlib.Path]:
+def _discover_scan_paths(*, obs_dir: pathlib.Path, max_scans: int | None = None) -> list[pathlib.Path]:
     binned_dirs = sorted([p for p in obs_dir.iterdir() if p.is_dir() and p.name.startswith("binned_tod_")])
     if len(binned_dirs) == 0:
         return []
@@ -319,6 +319,8 @@ def _discover_scan_paths(*, obs_dir: pathlib.Path) -> list[pathlib.Path]:
     if chosen is None:
         chosen = binned_dirs[0]
     scan_paths = sorted([p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")])
+    if max_scans is not None and int(max_scans) > 0:
+        scan_paths = scan_paths[: int(max_scans)]
     return scan_paths
 
 
@@ -326,7 +328,14 @@ def _suffix(mode: str) -> str:
     return f"_{str(mode).lower()}"
 
 
-def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_dir: pathlib.Path, recon_mode: str) -> None:
+def _plot_dataset(
+    *,
+    dataset_dir: pathlib.Path,
+    recon_root: pathlib.Path,
+    out_dir: pathlib.Path,
+    recon_mode: str,
+    max_scans: int | None,
+) -> None:
     recon_mode = str(recon_mode).lower()
     if recon_mode not in ("ml", "map"):
         raise ValueError("RECON_MODE must be 'ml' or 'map'.")
@@ -356,7 +365,7 @@ def _plot_dataset(*, dataset_dir: pathlib.Path, recon_root: pathlib.Path, out_di
     c_naive = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
     scan_paths = []
     for _obs_id, obs_dir in _discover_obs_entries(dataset_dir):
-        scan_paths.extend(_discover_scan_paths(obs_dir=obs_dir))
+        scan_paths.extend(_discover_scan_paths(obs_dir=obs_dir, max_scans=max_scans))
 
     if len(scan_paths) == 0:
         raise RuntimeError(f"No scan NPZ files found under {dataset_dir}.")
@@ -511,7 +520,7 @@ def _plot_obs_scan_stacks(*, obs_id: str, scan_paths: list[pathlib.Path], recon_
         z.close()
 
 
-def main(*, dataset: str) -> None:
+def main(*, dataset: str, max_scans: int | None = None) -> None:
     mode = str(RECON_MODE).lower()
     if mode not in ("ml", "map"):
         raise ValueError("RECON_MODE must be 'ml' or 'map'.")
@@ -524,12 +533,18 @@ def main(*, dataset: str) -> None:
         raise RuntimeError(f"Recon directory does not exist: {recon_root} (run run_reconstruction.py and run_synthesis.py first)")
 
     out_dir = recon_root / "plots"
-    _plot_dataset(dataset_dir=dataset_dir, recon_root=recon_root, out_dir=out_dir, recon_mode=mode)
+    _plot_dataset(
+        dataset_dir=dataset_dir,
+        recon_root=recon_root,
+        out_dir=out_dir,
+        recon_mode=mode,
+        max_scans=max_scans,
+    )
 
     # Per-obs scan stacks (top-N by number of scan files).
     rows = []
     for obs_id, obs_dir in _discover_obs_entries(dataset_dir):
-        scan_paths = _discover_scan_paths(obs_dir=obs_dir)
+        scan_paths = _discover_scan_paths(obs_dir=obs_dir, max_scans=max_scans)
         if len(scan_paths) == 0:
             continue
         rows.append((int(len(scan_paths)), str(obs_id), scan_paths))
@@ -544,5 +559,6 @@ if __name__ == "__main__":
     import sys
 
     dataset = sys.argv[1] if len(sys.argv) >= 2 else "ra0hdec-59.75"
-    main(dataset=str(dataset))
+    max_scans = int(sys.argv[2]) if len(sys.argv) >= 3 else None
+    main(dataset=str(dataset), max_scans=max_scans)
 

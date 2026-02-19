@@ -43,6 +43,7 @@ class Config:
     cg_tol: float = 5e-4
     cg_maxiter: int = 2000
     prefer_binned_subdir: str = "binned_tod_10arcmin"
+    max_scans: int | None = None
 
 
 def _discover_fields(dataset_dir: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
@@ -60,7 +61,10 @@ def _discover_scan_paths(*, field_dir: pathlib.Path, cfg: Config) -> list[pathli
     if not binned_dirs:
         return []
     chosen = next((p for p in binned_dirs if p.name == str(cfg.prefer_binned_subdir)), binned_dirs[0])
-    return sorted([p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")])
+    scan_paths = sorted([p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")])
+    if cfg.max_scans is not None and int(cfg.max_scans) > 0:
+        scan_paths = scan_paths[: int(cfg.max_scans)]
+    return scan_paths
 
 
 def _discover_recon_paths(*, recon_dir: pathlib.Path, n_scans: int, mode: str) -> list[pathlib.Path]:
@@ -387,5 +391,13 @@ if __name__ == "__main__":
 
     dataset = sys.argv[1] if len(sys.argv) >= 2 else "ra0hdec-59.75"
     scope = sys.argv[2] if len(sys.argv) >= 3 else "both"
+    max_scans = int(sys.argv[3]) if len(sys.argv) >= 4 else None
     for estimator_mode in ("ML", "MAP"):
-        main(Config(dataset_dir=str(dataset), estimator_mode=str(estimator_mode), synthesis_scope=str(scope)))
+        main(
+            Config(
+                dataset_dir=str(dataset),
+                estimator_mode=str(estimator_mode),
+                synthesis_scope=str(scope),
+                max_scans=max_scans,
+            )
+        )

@@ -41,6 +41,7 @@ class Config:
     cg_maxiter: int = 1200
     noise_per_raw_detector_per_153hz_sample_mk: float = 10.0
     prefer_binned_subdir: str = "binned_tod_10arcmin"
+    max_scans: int | None = None
 
 
 def _discover_fields(dataset_dir: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
@@ -78,6 +79,8 @@ def _discover_scan_paths(*, field_dir: pathlib.Path, cfg: Config) -> list[pathli
         chosen = binned_dirs[0]
 
     scan_paths = sorted([p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")])
+    if cfg.max_scans is not None and int(cfg.max_scans) > 0:
+        scan_paths = scan_paths[: int(cfg.max_scans)]
     return scan_paths
 
 
@@ -427,6 +430,7 @@ if __name__ == "__main__":
     import sys
 
     dataset = sys.argv[1] if len(sys.argv) >= 2 else "ra0hdec-59.75"
+    max_scans = int(sys.argv[2]) if len(sys.argv) >= 3 else None
     for estimator_mode in ("ML", "MAP"):
-        main(Config(dataset_dir=str(dataset), estimator_mode=str(estimator_mode)))
+        main(Config(dataset_dir=str(dataset), estimator_mode=str(estimator_mode), max_scans=max_scans))
 
