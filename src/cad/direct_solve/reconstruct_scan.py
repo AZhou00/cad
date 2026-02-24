@@ -18,9 +18,9 @@ from typing import Literal
 import numpy as np
 import scipy.sparse.linalg as spla
 
-from .map import BBox
-from .prior import FourierGaussianPrior
-from .util import frozen_screen_bilinear_weights, pointing_from_pix_index
+from cad.map import BBox
+from cad.prior import FourierGaussianPrior
+from cad.util import frozen_screen_bilinear_weights, pointing_from_pix_index
 
 
 @dataclass

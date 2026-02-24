@@ -19,9 +19,9 @@ from typing import Literal
 import numpy as np
 import scipy.sparse.linalg as spla
 
-from .map import BBox, bbox_union, scan_bbox_from_pix_index
-from .prior import FourierGaussianPrior
-from .util import (
+from cad.map import BBox, bbox_union, scan_bbox_from_pix_index
+from cad.prior import FourierGaussianPrior
+from cad.util import (
     bbox_pad_for_open_boundary,
     frozen_screen_bilinear_weights,
     observed_pixel_index_set,

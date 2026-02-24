@@ -1,54 +1,23 @@
 """
-Deterministic scan layout and global coordinate mapping for analysis_parallel.
+Deterministic scan layout and global coordinate mapping for parallel solve.
 
-Strict global coordinate: single CMB bbox (union over all scans) with pixel index
-pix = iy + ix*ny in [0, nx*ny). Observed set is the union of hit pixels across scans
-above min_hits_per_pix. global_to_obs[pix] = obs_index in [0, n_obs) or -1.
+Single CMB bbox (union over all scans), pix = iy + ix*ny. Observed set is the
+union of hit pixels across scans above min_hits_per_pix. global_to_obs[pix] in [0, n_obs) or -1.
 """
 
 from __future__ import annotations
 
-import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-if str(Path(__file__).resolve().parent.parent / "src") not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from cad import dataset_io
 from cad import map as map_util
 from cad import util
 
-
-def discover_fields(dataset_dir: Path) -> list[tuple[str, Path]]:
-    """Return [(field_id, field_input_dir)]. Subdirs named with digits are obs ids."""
-    subdirs = [p for p in dataset_dir.iterdir() if p.is_dir()]
-    obs = sorted([p for p in subdirs if re.fullmatch(r"\d+", p.name)], key=lambda p: p.name)
-    if obs:
-        return [(p.name, p) for p in obs]
-    return [(dataset_dir.name, dataset_dir)]
-
-
-def discover_scan_paths(
-    field_dir: Path,
-    *,
-    prefer_binned_subdir: str = "binned_tod_10arcmin",
-    max_scans: int | None = None,
-) -> list[Path]:
-    """Return sorted scan NPZ paths for a field directory."""
-    binned_dirs = sorted(
-        [p for p in field_dir.iterdir() if p.is_dir() and p.name.startswith("binned_tod_")]
-    )
-    if not binned_dirs:
-        return []
-    chosen = next((p for p in binned_dirs if p.name == prefer_binned_subdir), binned_dirs[0])
-    scan_paths = sorted(
-        [p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")]
-    )
-    if max_scans is not None and max_scans > 0:
-        scan_paths = scan_paths[:max_scans]
-    return scan_paths
+discover_fields = dataset_io.discover_fields
+discover_scan_paths = dataset_io.discover_scan_paths
 
 
 def load_scan_for_layout(npz_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -62,9 +31,7 @@ def load_scan_for_layout(npz_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 @dataclass(frozen=True)
 class GlobalLayout:
-    """
-    Single source of truth for global CMB grid and observed-pixel set.
-    """
+    """Single source of truth for global CMB grid and observed-pixel set."""
 
     bbox_ix0: int
     bbox_iy0: int
@@ -95,9 +62,7 @@ def build_layout(
     scan_paths: list[Path],
     min_hits_per_pix: int = 1,
 ) -> GlobalLayout:
-    """
-    Build deterministic global layout from scan paths.
-    """
+    """Build deterministic global layout from scan paths."""
     if not scan_paths:
         raise ValueError("scan_paths must be non-empty")
 

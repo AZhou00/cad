@@ -6,8 +6,10 @@ The main public entry points are:
   - `synthesize_scans` (multi-scan)
 """
 
-from .reconstruct_scan import ScanSolve, solve_single_scan
-from .synthesize_scan import MultiScanSolve, synthesize_scans
+from .direct_solve import reconstruct_scan
+from .direct_solve import synthesize_scan
+from .direct_solve.reconstruct_scan import ScanSolve, solve_single_scan
+from .direct_solve.synthesize_scan import MultiScanSolve, synthesize_scans
 from .prior import FourierGaussianPrior
 from .wind import estimate_wind_deg_per_s
 

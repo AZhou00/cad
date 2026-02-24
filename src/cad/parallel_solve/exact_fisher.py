@@ -3,7 +3,7 @@ Build per-scan information form F_s = P^T Ntilde^{-1} P and b_s = P^T Ntilde^{-1
 
 Woodbury: M_s = C_a^{-1} + W^T N^{-1} W; Ntilde_s^{-1} = N^{-1} - N^{-1} W M_s^{-1} W^T N^{-1}.
 Uses matrix-free M_s (CG) when n_pix_atm is large; builds F_s column-by-column.
-See audit_math.py and notebooks/notes_realistic_wind_examples/util_inference.py.
+Optional/advanced path; default parallel pipeline uses diagonal covariance.
 """
 
 from __future__ import annotations
@@ -12,11 +12,6 @@ import numpy as np
 import scipy.linalg as la
 import scipy.sparse.linalg as spla
 
-# cad from parent src
-import sys
-from pathlib import Path
-if str(Path(__file__).resolve().parent.parent / "src") not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from cad.prior import FourierGaussianPrior
 
 
@@ -47,19 +42,6 @@ def build_fisher_and_rhs(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute F_s (n_obs_scan, n_obs_scan), b_s (n_obs_scan), c_hat_s (n_obs_scan).
-
-    Args:
-      d: (n_valid,) TOD in mK.
-      inv_var: (n_valid,) per-sample 1/sigma^2.
-      pix_obs_local: (n_valid,) index in [0, n_obs_scan) for each valid sample.
-      idx4, w4: (n_valid, 4) atmosphere bilinear indices and weights.
-      prior_atm: C_a^{-1} operator on atmosphere grid.
-      n_obs_scan: number of observed pixels for this scan.
-
-    Returns:
-      F_s: symmetric (n_obs_scan, n_obs_scan)
-      b_s: (n_obs_scan,)
-      c_hat_s: (n_obs_scan,) ML estimate with mean removed.
     """
     n_valid = int(d.size)
     n_pix_atm = int(prior_atm.nx * prior_atm.ny)
@@ -90,7 +72,6 @@ def build_fisher_and_rhs(
         dtype=np.float64,
     )
 
-    # Diagonal preconditioner for M: diag(W^T N^{-1} W) + approx diag(C_a^{-1})
     diag_WtNW = np.bincount(
         idx4.reshape(-1),
         weights=(w4 * w4 * inv_var[:, None]).reshape(-1),
@@ -106,20 +87,16 @@ def build_fisher_and_rhs(
         dtype=np.float64,
     )
 
-    # u = M^{-1} (W^T N^{-1} d)
     rhs_u = _wt_apply(idx4, w4, inv_var * d, n_pix_atm)
     u, info = spla.cg(M_op, rhs_u, M=M_pre, atol=0.0, rtol=float(cg_tol), maxiter=int(cg_maxiter))
     if info != 0:
         raise RuntimeError(f"M_s solve did not converge (info={info})")
     u = np.asarray(u, dtype=np.float64).reshape(-1)
 
-    # y = Ntilde^{-1} d = N^{-1} d - N^{-1} W u
     y = inv_var * d - inv_var * _w_apply(idx4, w4, u)
     y = np.asarray(y, dtype=np.float64)
 
-    # b_s = P^T y
     b_s = np.bincount(pix_obs_local, weights=y, minlength=n_obs_scan).astype(np.float64)
-    # F_s column by column: F_s[:, j] = P^T Ntilde^{-1} P e_j
     F_s = np.zeros((n_obs_scan, n_obs_scan), dtype=np.float64)
     for j in range(n_obs_scan):
         z = np.zeros((n_valid,), dtype=np.float64)

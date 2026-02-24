@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-Build and save the global scan layout for a field.
-
-Usage:
-  python build_layout.py <data_dir> <dataset_name> <field_id> <layout_out.npz> [max_scans] [min_hits_per_pix]
+Build and save global scan layout for a field. Thin CLI around parallel_solve.
+Output layout under: /pscratch/.../<dataset>_recon_parallel/<field_id>/layout.npz
 """
 
 from __future__ import annotations
@@ -11,12 +9,15 @@ from __future__ import annotations
 import pathlib
 import sys
 
-from global_layout import (
-    build_layout,
-    discover_fields,
-    discover_scan_paths,
-    save_layout,
-)
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+CAD_DIR = BASE_DIR.parent
+DATA_DIR = CAD_DIR / "data"
+OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/flamingo/cmb-atmosphere-data")
+
+if str(CAD_DIR / "src") not in sys.path:
+    sys.path.insert(0, str(CAD_DIR / "src"))
+
+from cad.parallel_solve import build_layout, discover_fields, discover_scan_paths, save_layout
 
 
 def main() -> None:
@@ -53,6 +54,7 @@ def main() -> None:
         scan_paths=scan_paths,
         min_hits_per_pix=min_hits_per_pix,
     )
+    layout_out.parent.mkdir(parents=True, exist_ok=True)
     save_layout(layout, layout_out)
     print(f"[write] {layout_out} n_scans={layout.n_scans} n_obs={layout.n_obs}", flush=True)
 
