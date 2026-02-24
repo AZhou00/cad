@@ -1,5 +1,5 @@
 """
-Parallel solve: layout + per-scan reconstruction + diagonal synthesis.
+Parallel solve: layout + per-scan reconstruction + exact synthesis.
 
 Shared kernels: cad (src/cad). This package: layout, run_one_scan, synthesis.
 """

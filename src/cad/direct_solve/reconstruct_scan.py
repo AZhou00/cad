@@ -40,6 +40,7 @@ class ScanSolve:
       - pix_obs_local: (n_valid,) obs-pixel indices for each valid TOD sample
       - idx4, w4: (n_valid,4) atmosphere bilinear corners/weights into a0.ravel()
       - inv_var: (n_valid,) per-sample inverse variances
+      - tod_valid_mk: (n_valid,) valid TOD vector d in same order as pix_obs_local
       - rhs_c: (n_obs,) P^T N^{-1} d on obs basis
       - rhs_a: (n_pix_atm,) W^T N^{-1} d on atmosphere grid
       - prior_atm, prior_cmb: FFT priors (stationary, periodic on their domains)
@@ -57,6 +58,7 @@ class ScanSolve:
     idx4: np.ndarray
     w4: np.ndarray
     inv_var: np.ndarray
+    tod_valid_mk: np.ndarray
     rhs_c: np.ndarray
     rhs_a: np.ndarray
     prior_atm: FourierGaussianPrior
@@ -316,6 +318,7 @@ def solve_single_scan(
         idx4=idx4,
         w4=w4,
         inv_var=inv_var,
+        tod_valid_mk=d,
         rhs_c=rhs_c_full,
         rhs_a=rhs_a,
         prior_atm=prior_atm,

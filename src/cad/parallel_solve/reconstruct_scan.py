@@ -1,5 +1,8 @@
 """
 Parallel solve: single-scan ML reconstruction (run_one_scan) and scan artifact loading.
+
+Per-scan: CPU solve_single_scan then build of cov_inv, Pt_Ninv_d; c_hat_scan_obs from the normal equation.
+Single npz per scan with point estimate, cov_inv, Pt_Ninv_d, and metadata. Requires JAX/GPU.
 """
 
 from __future__ import annotations
@@ -16,33 +19,8 @@ from cad import power
 from cad import reconstruct_scan as cad_reconstruct_scan
 from cad import util
 
+from .fisher import build_scan_information
 from .layout import GlobalLayout
-
-
-def _atm_var_per_sample_from_w4(
-    *,
-    prior_atm: cad.FourierGaussianPrior,
-    w4: np.ndarray,
-) -> np.ndarray:
-    """Approximate diag(W C_a W^T) for bilinear W using stationary C_a."""
-    w4 = np.asarray(w4, dtype=np.float64)
-    if w4.ndim != 2 or w4.shape[1] != 4:
-        raise ValueError("w4 must have shape (n_valid, 4).")
-    nx = int(prior_atm.nx)
-    ny = int(prior_atm.ny)
-    n_pix = nx * ny
-    e0 = np.zeros((n_pix,), dtype=np.float64)
-    e0[0] = 1.0
-    cov0 = np.asarray(prior_atm.apply_C(e0), dtype=np.float64).reshape(nx, ny)
-    offsets = np.asarray([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.int64)
-    k4 = np.empty((4, 4), dtype=np.float64)
-    for a in range(4):
-        for b in range(4):
-            dx = int((offsets[b, 0] - offsets[a, 0]) % nx)
-            dy = int((offsets[b, 1] - offsets[a, 1]) % ny)
-            k4[a, b] = float(cov0[dx, dy])
-    atm_var = np.einsum("ni,ij,nj->n", w4, k4, w4, optimize=True)
-    return np.maximum(atm_var, 0.0)
 
 
 def run_one_scan(
@@ -163,7 +141,6 @@ def run_one_scan(
         cg_tol=float(cg_tol),
         cg_maxiter=int(cg_maxiter),
     )
-    c_hat_full = np.asarray(sol.c_hat_full_mk, dtype=np.float64)
 
     obs_all = np.asarray(sol.pix_obs_local, dtype=np.int64)
     obs_idx_scan = np.unique(obs_all)
@@ -173,21 +150,40 @@ def run_one_scan(
     if not np.all(obs_idx_scan[pix_obs_local_scan] == obs_all):
         raise RuntimeError("Internal error: scan-local observed index mapping failed.")
 
-    c_hat_scan_obs = c_hat_full[obs_pix_global_scan]
-
-    data_var = 1.0 / np.asarray(sol.inv_var, dtype=np.float64)
-    atm_var = _atm_var_per_sample_from_w4(prior_atm=prior_atm, w4=np.asarray(sol.w4, dtype=np.float64))
-    var_eff = data_var + atm_var
-    if not np.all(np.isfinite(var_eff)) or np.any(var_eff <= 0.0):
-        raise RuntimeError("Invalid effective sample variances in diagonal covariance approximation.")
-    inv_var_eff = 1.0 / var_eff
-    precision_diag_scan_obs = np.bincount(
-        pix_obs_local_scan,
-        weights=inv_var_eff,
-        minlength=n_obs_scan,
+    n_pix_atm = int(prior_atm.nx * prior_atm.ny)
+    nx, ny = int(prior_atm.nx), int(prior_atm.ny)
+    cl_per_mode = np.asarray(prior_atm._cl_per_mode(), dtype=np.float64)
+    dxdy = float(prior_atm.pixel_res_rad) ** 2 * float(prior_atm.cos_dec)
+    inv_var = np.asarray(sol.inv_var, dtype=np.float64)
+    reg_eps = 1e-10 * (float(np.mean(inv_var)) * 4.0 + 1e-12)
+    idx4 = np.asarray(sol.idx4, dtype=np.int32)
+    w4 = np.asarray(sol.w4, dtype=np.float64)
+    diag_WtNW = np.bincount(
+        idx4.reshape(-1),
+        weights=(w4 * w4 * inv_var[:, None]).reshape(-1),
+        minlength=n_pix_atm,
     ).astype(np.float64)
-    precision_diag_scan_obs = np.maximum(precision_diag_scan_obs, 1e-30)
-    var_diag_scan_obs = 1.0 / precision_diag_scan_obs
+    e0 = np.zeros((n_pix_atm,), dtype=np.float64)
+    e0[0] = 1.0
+    diag_Ca_inv_0 = float(prior_atm.apply_Cinv(e0)[0])
+    diag_M = np.maximum(diag_WtNW + diag_Ca_inv_0 + reg_eps, 1e-14)
+
+    cov_inv_s, Pt_Ninv_d_s, c_hat_scan_obs = build_scan_information(
+        d=np.asarray(sol.tod_valid_mk, dtype=np.float64),
+        inv_var=inv_var,
+        pix_obs_local=pix_obs_local_scan,
+        idx4=idx4,
+        w4=w4,
+        nx=nx,
+        ny=ny,
+        cl_per_mode=cl_per_mode,
+        dxdy=dxdy,
+        diag_M=diag_M,
+        n_obs_scan=n_obs_scan,
+        n_pix_atm=n_pix_atm,
+        reg_eps=reg_eps,
+        cg_niter=cg_maxiter,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"scan_{scan_index:04d}_ml.npz"
@@ -201,8 +197,8 @@ def run_one_scan(
         ny=np.int64(layout.ny),
         obs_pix_global_scan=obs_pix_global_scan,
         c_hat_scan_obs=c_hat_scan_obs,
-        precision_diag_scan_obs=precision_diag_scan_obs,
-        var_diag_scan_obs=var_diag_scan_obs,
+        cov_inv=cov_inv_s,
+        Pt_Ninv_d=Pt_Ninv_d_s,
         pixel_size_deg=np.float64(pixel_size_deg),
         wind_deg_per_s=np.array(wind_deg_per_s, dtype=np.float64),
         n_obs_scan=np.int64(n_obs_scan),
@@ -212,9 +208,18 @@ def run_one_scan(
 
 
 def load_scan_artifact(npz_path: Path) -> dict:
+    """Load per-scan npz: obs_pix_global_scan, c_hat_scan_obs, cov_inv, Pt_Ninv_d (and optional metadata)."""
     with np.load(npz_path, allow_pickle=True) as z:
-        return dict(
+        out = dict(
             obs_pix_global_scan=np.asarray(z["obs_pix_global_scan"], dtype=np.int64).copy(),
             c_hat_scan_obs=np.asarray(z["c_hat_scan_obs"], dtype=np.float64).copy(),
-            var_diag_scan_obs=np.asarray(z["var_diag_scan_obs"], dtype=np.float64).copy(),
         )
+        if "cov_inv" in z:
+            out["cov_inv"] = np.asarray(z["cov_inv"], dtype=np.float64).copy()
+            out["Pt_Ninv_d"] = np.asarray(z["Pt_Ninv_d"], dtype=np.float64).copy()
+        else:
+            out["cov_inv"] = np.asarray(z["F_s"], dtype=np.float64).copy()
+            out["Pt_Ninv_d"] = np.asarray(z["b_s"], dtype=np.float64).copy()
+        if "var_diag_scan_obs" in z:
+            out["var_diag_scan_obs"] = np.asarray(z["var_diag_scan_obs"], dtype=np.float64).copy()
+        return out

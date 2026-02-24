@@ -12,7 +12,7 @@ import sys
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 CAD_DIR = BASE_DIR.parent
 DATA_DIR = CAD_DIR / "data"
-OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/flamingo/cmb-atmosphere-data")
+OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 MAX_SCANS_DIRECT = 8
 
 if str(CAD_DIR / "src") not in sys.path:

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
 Single-scan ML reconstruction for one layout task. Thin CLI around parallel_solve.
+
+CPU: solve_single_scan to get operator state; then build cov_inv, Pt_Ninv_d and c_hat_scan_obs from the normal equation.
+Writes one npz per scan (c_hat_scan_obs, cov_inv, Pt_Ninv_d, metadata). Run one scan per process;
+set CUDA_VISIBLE_DEVICES per process (e.g. 0--3 for 4 GPUs). Requires JAX/GPU.
+
 Usage: run_reconstruction_single.py <layout.npz> <out_dir> [scan_index] [n_ell_bins] ...
 """
 
@@ -9,6 +14,7 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
+import time
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 CAD_DIR = BASE_DIR.parent
@@ -40,6 +46,7 @@ def main() -> None:
     layout = load_layout(layout_path)
     if scan_index < 0 or scan_index >= layout.n_scans:
         raise RuntimeError(f"scan_index {scan_index} out of range [0, {layout.n_scans})")
+    t0 = time.perf_counter()
     run_one_scan(
         layout,
         scan_index,
@@ -50,6 +57,8 @@ def main() -> None:
         cg_tol=cg_tol,
         cg_maxiter=cg_maxiter,
     )
+    elapsed = time.perf_counter() - t0
+    print(f"[time] scan {scan_index} {elapsed:.1f}s", flush=True)
 
 
 if __name__ == "__main__":

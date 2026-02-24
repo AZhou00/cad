@@ -1,0 +1,5 @@
+Parallel core benchmark: speed
+==================================================
+load_layout: SKIP (missing /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/101706388/layout.npz)
+load_scan_artifact (n=100 synthetic): 0.001160 s (mean over 5)
+run_synthesis: SKIP (no layout or scan_ml dir)

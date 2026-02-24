@@ -1,7 +1,26 @@
 #!/usr/bin/env python3
 """
 Build and save global scan layout for a field. Thin CLI around parallel_solve.
-Output layout under: /pscratch/.../<dataset>_recon_parallel/<field_id>/layout.npz
+Output layout path is fixed: OUT_BASE / dataset_name / field_id / "layout.npz"
+(OUT_BASE = /pscratch/sd/j/junzhez/cmb-atmosphere-data).
+
+How to run (one field = one obs id; repeat per field for "all" data):
+
+  # 1. Build layout (use all scans by omitting max_scans)
+  python build_layout.py <data_dir> <dataset_name> <field_id> [max_scans] [min_hits]
+
+  Example for field 101706388, all scans:
+  python build_layout.py cad/data ra0hdec-59.75 101706388
+
+  # 2. Run reconstruction array: one Slurm task per scan. Paths are hardcoded in
+  #    slurm_run_reconstruction_array.sh (DATASET_NAME, FIELD_ID). Set --array=0-<n_scans-1>
+  #    to match step 1 output (e.g. 0-71 for 72 scans).
+  sbatch --array=0-71 slurm_run_reconstruction_array.sh
+
+  # 3. After array completes, run synthesis (single process; paths in run_synthesis.py).
+  python run_synthesis.py
+
+  Field IDs = numeric subdirs under <data_dir>/<dataset_name> (e.g. 101706388, 101715260, ...).
 """
 
 from __future__ import annotations
@@ -12,7 +31,7 @@ import sys
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 CAD_DIR = BASE_DIR.parent
 DATA_DIR = CAD_DIR / "data"
-OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/flamingo/cmb-atmosphere-data")
+OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 
 if str(CAD_DIR / "src") not in sys.path:
     sys.path.insert(0, str(CAD_DIR / "src"))
@@ -22,18 +41,18 @@ from cad.parallel_solve import build_layout, discover_fields, discover_scan_path
 
 def main() -> None:
     argv = sys.argv[1:]
-    if len(argv) < 4:
+    if len(argv) < 3:
         print(
-            "Usage: build_layout.py <data_dir> <dataset_name> <field_id> <layout_out.npz> [max_scans] [min_hits]",
+            "Usage: build_layout.py <data_dir> <dataset_name> <field_id> [max_scans] [min_hits]",
             file=sys.stderr,
         )
         sys.exit(1)
     data_dir = pathlib.Path(argv[0])
     dataset_name = str(argv[1])
     field_id = str(argv[2])
-    layout_out = pathlib.Path(argv[3])
-    max_scans = int(argv[4]) if len(argv) > 4 else None
-    min_hits_per_pix = int(argv[5]) if len(argv) > 5 else 1
+    layout_out = OUT_BASE / dataset_name / field_id / "layout.npz"
+    max_scans = int(argv[3]) if len(argv) > 3 else None
+    min_hits_per_pix = int(argv[4]) if len(argv) > 4 else 1
 
     dataset_dir = data_dir / dataset_name
     if not dataset_dir.exists():
