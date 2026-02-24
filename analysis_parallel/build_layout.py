@@ -6,21 +6,15 @@ Output layout path is fixed: OUT_BASE / dataset_name / field_id / "layout.npz"
 
 How to run (one field = one obs id; repeat per field for "all" data):
 
-  # 1. Build layout (use all scans by omitting max_scans)
-  python build_layout.py <data_dir> <dataset_name> <field_id> [max_scans] [min_hits]
+  # 1. Build layout (data from cad/data; use all scans by omitting max_scans)
+  python build_layout.py <dataset_name> <field_id> [max_scans] [min_hits]
+  Example: python build_layout.py ra0hdec-59.75 101706388
 
-  Example for field 101706388, all scans:
-  python build_layout.py cad/data ra0hdec-59.75 101706388
+  # 2. Run reconstruction on an interactive GPU node (4 GPUs): run_reconstruction.py
+  #    builds layout, splits scans across GPUs, skips completed. Paths in that script.
+  # 3. After reconstruction completes: python run_synthesis.py
 
-  # 2. Run reconstruction array: one Slurm task per scan. Paths are hardcoded in
-  #    slurm_run_reconstruction_array.sh (DATASET_NAME, FIELD_ID). Set --array=0-<n_scans-1>
-  #    to match step 1 output (e.g. 0-71 for 72 scans).
-  sbatch --array=0-71 slurm_run_reconstruction_array.sh
-
-  # 3. After array completes, run synthesis (single process; paths in run_synthesis.py).
-  python run_synthesis.py
-
-  Field IDs = numeric subdirs under <data_dir>/<dataset_name> (e.g. 101706388, 101715260, ...).
+  Field IDs = numeric subdirs under cad/data/<dataset_name>/ (e.g. 101706388, 101715260, ...).
 """
 
 from __future__ import annotations
@@ -41,20 +35,15 @@ from cad.parallel_solve import build_layout, discover_fields, discover_scan_path
 
 def main() -> None:
     argv = sys.argv[1:]
-    if len(argv) < 3:
-        print(
-            "Usage: build_layout.py <data_dir> <dataset_name> <field_id> [max_scans] [min_hits]",
-            file=sys.stderr,
-        )
+    if len(argv) < 2:
+        print("Usage: build_layout.py <dataset_name> <field_id> [max_scans] [min_hits]", file=sys.stderr)
         sys.exit(1)
-    data_dir = pathlib.Path(argv[0])
-    dataset_name = str(argv[1])
-    field_id = str(argv[2])
+    dataset_name, field_id = str(argv[0]), str(argv[1])
     layout_out = OUT_BASE / dataset_name / field_id / "layout.npz"
-    max_scans = int(argv[3]) if len(argv) > 3 else None
-    min_hits_per_pix = int(argv[4]) if len(argv) > 4 else 1
+    max_scans = int(argv[2]) if len(argv) > 2 else None
+    min_hits_per_pix = int(argv[3]) if len(argv) > 3 else 1
 
-    dataset_dir = data_dir / dataset_name
+    dataset_dir = DATA_DIR / dataset_name
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset dir not found: {dataset_dir}")
     fields = discover_fields(dataset_dir)

@@ -13,7 +13,7 @@ with diagonal N (white, per-detector) and stationary FFT-diagonal priors on a0
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal, Optional
 
 import numpy as np
 import scipy.sparse.linalg as spla
@@ -84,6 +84,7 @@ def solve_single_scan(
     cl_floor_mk2: float = 1e-12,
     cg_tol: float = 1e-3,
     cg_maxiter: int = 400,
+    cg_callback: Optional[Callable[[np.ndarray], None]] = None,
 ) -> ScanSolve:
     """
     Matrix-free single-scan solve for (c, a0).
@@ -127,7 +128,8 @@ def solve_single_scan(
       estimator_mode: 'ML' or 'MAP'.
       n_scans: total scans intended for synthesis; MAP uses (1/n_scans) C_c^{-1} per scan.
       cl_floor_mk2: small positive floor used only for numerical stabilization of diagonals.
-      cg_tol, cg_maxiter: CG controls for the joint solve.
+      cg_tol: relative tolerance for CG; stop when norm(residual) <= cg_tol * norm(rhs) (dimensionless).
+      cg_maxiter: maximum CG iterations.
 
     Returns:
       ScanSolve.
@@ -294,7 +296,9 @@ def solve_single_scan(
     P_pre = spla.LinearOperator(A_op.shape, matvec=Pinv_matvec, dtype=np.float64)
 
     rhs = np.concatenate([rhs_c_act, rhs_a], axis=0)  # (n_c + n_pix_atm,) = [P^T N^{-1} d; W^T N^{-1} d]
-    sol, info = spla.cg(A_op, rhs, M=P_pre, atol=0.0, rtol=float(cg_tol), maxiter=int(cg_maxiter))
+    sol, info = spla.cg(
+        A_op, rhs, M=P_pre, atol=0.0, rtol=float(cg_tol), maxiter=int(cg_maxiter), callback=cg_callback
+    )
     if info != 0:
         raise RuntimeError(f"Joint CG did not converge (info={info}). Increase cg_maxiter or adjust preconditioning.")
     sol = np.asarray(sol, dtype=np.float64).reshape(-1)

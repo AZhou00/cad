@@ -1,5 +1,15 @@
-Parallel core benchmark: speed
+Parallel benchmark: speed (real data where noted)
 ==================================================
-load_layout: SKIP (missing /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/101706388/layout.npz)
-load_scan_artifact (n=100 synthetic): 0.001160 s (mean over 5)
-run_synthesis: SKIP (no layout or scan_ml dir)
+load_layout (scratch): 0.003602 s (mean over 5)
+
+load_scan_artifact (real, from single-scan run, n_obs_scan=6997): 1.628303 s (mean over 5)
+
+Single-scan estimate (real data: benchmark_data/.../0000_calibrated_scan000.npz):
+  Short run (20 iters): 56.01 s total
+    setup: 0.30 s
+    solve_single_scan: 0.15 s (est. full: 3.7 s)
+    build_scan_information: 43.57 s (est. full: 1115.5 s)
+    write: 11.93 s
+  Estimated single scan (512 iters): 1131.5 s
+
+run_synthesis: SKIP (no layout, scans dir, or not all scan artifacts present)

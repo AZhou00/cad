@@ -1,4 +1,15 @@
 # specific files
+*.txt
+*.log
+*.out
+*.err
+*.json
+*.yaml
+*.yml
+*.csv
+*.tsv
+*.pkl
+
 # notebooks/
 *test.ipynb
 *.npz

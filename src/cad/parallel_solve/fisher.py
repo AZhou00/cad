@@ -20,8 +20,8 @@ jax.config.update("jax_enable_x64", True)
 
 # Fixed batch size for cov_inv column builds to avoid recompilation
 COV_INV_BATCH_SIZE = 64
-# Fixed CG iterations (enough for convergence in benchmark)
-CG_NITER = 328
+# Default CG iterations when not overridden by run_one_scan (production uses 512)
+CG_NITER = 512
 
 
 def _apply_cinv(
@@ -120,6 +120,76 @@ def _cg_single(
     return x
 
 
+def _cg_single_converged(
+    M_matvec: callable,
+    rhs: jnp.ndarray,
+    diag_precond: jnp.ndarray,
+    tol: float = 5e-4,
+    maxiter: int = 1200,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """CG until residual < tol * norm(rhs) or maxiter. Returns (x, n_iters scalar)."""
+    norm_rhs = jnp.linalg.norm(rhs) + 1e-30
+    x = jnp.zeros_like(rhs)
+    r = rhs
+    z = rhs / diag_precond
+    p = z
+    rho = jnp.dot(r, z)
+    k = jnp.int32(0)
+
+    def body(carry):
+        x, r, z, p, rho, k_ = carry
+        Ap = M_matvec(p)
+        alpha = rho / (jnp.dot(p, Ap) + 1e-30)
+        x_new = x + alpha * p
+        r_new = r - alpha * Ap
+        z_new = r_new / diag_precond
+        rho_new = jnp.dot(r_new, z_new)
+        beta = rho_new / (rho + 1e-30)
+        p_new = z_new + beta * p
+        return (x_new, r_new, z_new, p_new, rho_new, k_ + 1)
+
+    def cond(carry):
+        _, r_, _, _, _, k_ = carry
+        norm_r = jnp.sqrt(jnp.dot(r_, r_))
+        return (norm_r > tol * norm_rhs) & (k_ < maxiter)
+
+    carry = jax.lax.while_loop(cond, body, (x, r, z, p, rho, k))
+    return carry[0], carry[5]
+
+
+def run_one_M_s_solve_converged(
+    rhs: np.ndarray,
+    idx4: np.ndarray,
+    w4: np.ndarray,
+    inv_var: np.ndarray,
+    nx: int,
+    ny: int,
+    cl_per_mode: np.ndarray,
+    dxdy: float,
+    diag_M: np.ndarray,
+    reg_eps: float,
+    tol: float = 5e-4,
+    maxiter: int = 1200,
+) -> tuple[np.ndarray, int]:
+    """One M_s solve with convergence check. Returns (x, n_iters). For benchmarking."""
+    n_pix_atm = int(diag_M.size)
+    idx4_j = jnp.asarray(idx4)
+    w4_j = jnp.asarray(w4)
+    inv_var_j = jnp.asarray(inv_var)
+    cl_per_mode_j = jnp.asarray(cl_per_mode)
+    diag_M_j = jnp.asarray(diag_M)
+    rhs_j = jnp.asarray(rhs, dtype=jnp.float64)
+
+    def M_matvec(v: jnp.ndarray) -> jnp.ndarray:
+        wv = _w_apply(idx4_j, w4_j, v)
+        wt_term = _wt_apply(idx4_j, w4_j, inv_var_j * wv, n_pix_atm)
+        cinv_term = _apply_cinv(v, nx, ny, cl_per_mode_j, dxdy)
+        return cinv_term + wt_term + reg_eps * v
+
+    x_j, k_j = _cg_single_converged(M_matvec, rhs_j, diag_M_j, tol=tol, maxiter=maxiter)
+    return np.asarray(x_j, dtype=np.float64), int(np.asarray(k_j))
+
+
 def build_scan_information(
     d: np.ndarray,
     inv_var: np.ndarray,
@@ -190,7 +260,7 @@ def build_scan_information(
             lambda a: _w_apply(idx4_j, w4_j, a)
         )(u_batch)
         cov_inv_cols = jax.vmap(
-            lambda w: jnp.bincount(pix_obs_local_j, weights=w, minlength=n_obs_scan),
+            lambda w: jax.ops.segment_sum(w, pix_obs_local_j, num_segments=n_obs_scan),
             in_axes=0,
             out_axes=0,
         )(w_batch)

@@ -1,5 +1,9 @@
-Parallel core benchmark: memory
+Parallel benchmark: memory
 ==================================================
-load_layout: SKIP (missing /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/101706388/layout.npz)
-load_scan_artifact: RSS 89.0 -> 89.0 MB
-run_synthesis: SKIP (no layout or scan_ml dir)
+load_layout: RSS 94.0 -> 98.8 MB
+  n_scans=72 n_obs=35470 n_pix=35750
+load_scan_artifact: RSS 3979.1 -> 4331.0 MB
+  cov_inv 6997x6997 = 373.52 MB float64
+
+single_scan_estimate: (see speed for stages)
+run_synthesis: SKIP (no layout, scans dir, or not all scan artifacts present)

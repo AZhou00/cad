@@ -3,7 +3,7 @@ Tests for the parallel solve path: layout, scan artifacts, synthesis.
 
 Run on compute node nid001097: ssh nid001097, then
   module load conda; module load gpu/1.0; conda activate jax;
-  cd <repo_root>; PYTHONPATH=cad/src python -m pytest cad/test/test_parallel.py -v
+  cd <repo_root>; python -m pytest cad/test/test_parallel.py -v
 """
 from __future__ import annotations
 
@@ -12,11 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
-# Prepend cad/src so cad.parallel_solve is importable
-CAD_SRC = Path(__file__).resolve().parent.parent / "src"
-if str(CAD_SRC) not in __import__("sys").path:
-    __import__("sys").path.insert(0, str(CAD_SRC))
 
 from cad.parallel_solve.layout import GlobalLayout, load_layout
 from cad.parallel_solve.reconstruct_scan import load_scan_artifact

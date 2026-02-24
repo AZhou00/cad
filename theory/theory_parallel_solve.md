@@ -179,10 +179,10 @@ with mean subtraction for gauge. Requires JAX/GPU (set `CUDA_VISIBLE_DEVICES` pe
 
 ### 3.5 Single-scan implementation mapping
 
-In `cad/analysis_parallel/run_reconstruction_single.py` and `cad/src/cad/parallel_solve/reconstruct_scan.py`:
+In `cad/analysis_parallel/run_reconstruction.py` (multi-GPU) and `cad/src/cad/parallel_solve/reconstruct_scan.py`:
 
 1. Load scan, estimate wind, mask bad detectors, estimate atmospheric spectrum, build bboxes and priors (same as before).
-2. Call `reconstruct_scan.solve_single_scan(..., estimator_mode="ML")` on CPU to obtain `sol` (idx4, w4, inv_var, pix_obs_local, tod_valid_mk, etc.).
+2. Call `solve_single_scan(..., estimator_mode="ML")` on CPU (from `cad/src/cad/direct_solve/reconstruct_scan.py`) to obtain `sol` (idx4, w4, inv_var, pix_obs_local, tod_valid_mk, etc.).
 3. Call `fisher.build_scan_information(...)` to build cov_inv, Pt_Ninv_d, and c_hat_scan_obs from the normal equation.
 4. Write a single NPZ per scan.
 
@@ -266,7 +266,7 @@ Saved in combined NPZ:
 ## 5) End-to-end computation order
 
 1. Build global layout: discover scans, global CMB bbox, global observed pixel set.
-2. Run one scan per process (`run_reconstruction_single.py`), each with its own GPU (`CUDA_VISIBLE_DEVICES`):
+2. Run reconstruction (`run_reconstruction.py`): one scan per process across 4 GPUs, skip completed:
    - CPU: `solve_single_scan` to get `sol`
    - Build cov_inv, Pt_Ninv_d, c_hat_scan_obs
    - save one NPZ per scan (c_hat_scan_obs, cov_inv, Pt_Ninv_d, metadata).

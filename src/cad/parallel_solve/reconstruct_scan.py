@@ -7,7 +7,9 @@ Single npz per scan with point estimate, cov_inv, Pt_Ninv_d, and metadata. Requi
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -31,9 +33,14 @@ def run_one_scan(
     n_ell_bins: int = 128,
     cl_floor_mk2: float = 1e-12,
     noise_per_raw_detector_per_153hz_sample_mk: float = 10.0,
-    cg_tol: float = 5e-4,
-    cg_maxiter: int = 1200,
-) -> None:
+    cg_tol: float = 1e-3,
+    cg_maxiter: int = 512,
+    timings: dict | None = None,
+    cg_callback: Optional[Callable[[np.ndarray], None]] = None,
+    return_sol: bool = False,
+) -> None | dict:
+    """If timings is not None, fill with stage keys. If return_sol is True, return dict(sol, prior_atm, ...) after CPU solve (no Fisher/write)."""
+    t0 = time.perf_counter()
     scan_path = layout.scan_paths[scan_index]
     s0 = dataset_io.load_scan(scan_path)
     pixel_size_deg = float(s0["pixel_size_deg"])
@@ -121,7 +128,10 @@ def run_one_scan(
         cos_dec=cos_dec,
         cl_floor_mk2=cl_floor_mk2,
     )
+    if timings is not None:
+        timings["setup"] = time.perf_counter() - t0
 
+    t_solve = time.perf_counter()
     sol = cad_reconstruct_scan.solve_single_scan(
         tod_mk=np.asarray(s["eff_tod_mk"], dtype=np.float64),
         pix_index=np.asarray(s["pix_index"], dtype=np.int64),
@@ -140,7 +150,12 @@ def run_one_scan(
         cl_floor_mk2=float(cl_floor_mk2),
         cg_tol=float(cg_tol),
         cg_maxiter=int(cg_maxiter),
+        cg_callback=cg_callback,
     )
+    if timings is not None:
+        timings["solve_single_scan"] = time.perf_counter() - t_solve
+    if return_sol:
+        return dict(sol=sol, prior_atm=prior_atm, layout=layout, s=s, pixel_size_deg=pixel_size_deg)
 
     obs_all = np.asarray(sol.pix_obs_local, dtype=np.int64)
     obs_idx_scan = np.unique(obs_all)
@@ -168,6 +183,7 @@ def run_one_scan(
     diag_Ca_inv_0 = float(prior_atm.apply_Cinv(e0)[0])
     diag_M = np.maximum(diag_WtNW + diag_Ca_inv_0 + reg_eps, 1e-14)
 
+    t_fisher = time.perf_counter()
     cov_inv_s, Pt_Ninv_d_s, c_hat_scan_obs = build_scan_information(
         d=np.asarray(sol.tod_valid_mk, dtype=np.float64),
         inv_var=inv_var,
@@ -184,8 +200,11 @@ def run_one_scan(
         reg_eps=reg_eps,
         cg_niter=cg_maxiter,
     )
+    if timings is not None:
+        timings["build_scan_information"] = time.perf_counter() - t_fisher
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    t_write = time.perf_counter()
     out_path = out_dir / f"scan_{scan_index:04d}_ml.npz"
     np.savez_compressed(
         out_path,
@@ -204,6 +223,8 @@ def run_one_scan(
         n_obs_scan=np.int64(n_obs_scan),
         estimator_mode=np.array("ML", dtype=object),
     )
+    if timings is not None:
+        timings["write"] = time.perf_counter() - t_write
     print(f"[write] {out_path} n_obs_scan={n_obs_scan}", flush=True)
 
 
