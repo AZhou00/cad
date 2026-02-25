@@ -142,11 +142,15 @@ def main() -> None:
         t_fisher = timings_dict.get("build_scan_information", 0.0)
         t_write = timings_dict.get("write", 0.0)
         est_single_scan = t_setup + t_write + (t_solve + t_fisher) * SCALE
-
+        with tempfile.TemporaryDirectory() as tmpdir2:
+            t0 = time.perf_counter()
+            run_one_scan(layout_bench, 0, Path(tmpdir2), cg_maxiter=CG_FULL, cg_tol=1e-3)
+            t_full_512 = time.perf_counter() - t0
         lines.extend([
             "Joint solve (CPU): [P' N^{-1} P, P' N^{-1} W; W' N^{-1} P, M] [c; a0] = [P' N^{-1} d; W' N^{-1} d]",
             "   Implemented by: cad.direct_solve.reconstruct_scan.solve_single_scan (CG)",
             f"   ___ Benchmark (short {CG_SAMPLE} iters): solve_single_scan {t_solve:.3f} s.",
+            f"   ___ Benchmark (full {CG_FULL} iters, cg_tol=1e-3): one-scan pipeline {t_full_512:.1f} s.",
             f"   Scaled to {CG_FULL} iters: {t_solve * SCALE:.1f} s per scan.",
             "",
             "Per-scan precision and RHS (GPU): Cov(hat c_s)^{-1} = P' tilde N_s^{-1} P, P' tilde N_s^{-1} d (Woodbury)",
@@ -171,7 +175,7 @@ def main() -> None:
                 "",
             ])
 
-    # --- run_synthesis: sum precision, sum RHS, solve ---
+    # --- run_synthesis: sum precision, sum RHS, solve (CPU-only; micro-benchmark) ---
     both_present = all(p.exists() for p in SYNTHESIS_SCAN_PATHS)
     if not both_present:
         lines.append(f"run_synthesis: SKIP (missing scan_0000_ml.npz or scan_0001_ml.npz in benchmark_data/{FIELD_ID}_reconstructed/...)")
@@ -182,19 +186,23 @@ def main() -> None:
             observation_id=OBSERVATION_ID,
         )
         out_npz = OUT_DIR / "benchmark_synthesis_out.npz"
-        timings = []
+        timings_synth: list[dict[str, float]] = []
         for _ in range(N_REP):
-            t0 = time.perf_counter()
-            run_synthesis(layout_synth, RECONSTRUCTED_DIR, out_npz)
-            timings.append(time.perf_counter() - t0)
-        t_synth = float(np.mean(timings))
+            td: dict[str, float] = {}
+            run_synthesis(layout_synth, RECONSTRUCTED_DIR, out_npz, timings=td)
+            timings_synth.append(td)
+        t_synth = float(np.mean([sum(td.values()) for td in timings_synth]))
+        t_load_s = float(np.mean([td["load_s"] for td in timings_synth]))
+        t_accum_s = float(np.mean([td["accumulate_s"] for td in timings_synth]))
+        t_solve_s = float(np.mean([td["solve_s"] for td in timings_synth]))
         rss = _rss_mb()
         n_obs = layout_synth.n_obs
         lines.extend([
-            "Synthesis: (sum_s Cov(hat c_s)^{-1}) c_hat = sum_s P' tilde N_s^{-1} d_s",
+            "Synthesis: (sum_s Cov(hat c_s)^{-1}) c_hat = sum_s P' tilde N_s^{-1} d_s (CPU only)",
             "   Implemented by: cad.parallel_solve.synthesize_scan.run_synthesis",
-            f"   ___ Benchmark (2 scans): {t_synth:.6f} s (mean over {N_REP}), RSS {rss:.1f} MB, n_obs={n_obs}.",
-            "   Accumulate cov_inv and Pt_Ninv_d at global obs indices; solve; gauge (mean subtraction).",
+            f"   ___ Benchmark (2 scans, n_obs={n_obs}): total {t_synth:.6f} s (mean over {N_REP}), RSS {rss:.1f} MB.",
+            f"   Micro: load_s={t_load_s:.4f} s, accumulate_s={t_accum_s:.4f} s, solve_s={t_solve_s:.4f} s.",
+            "   Solve is O(n_obs^3); for large n_obs synthesis is dominated by solve and I/O.",
             "",
         ])
         if out_npz.exists():
@@ -208,3 +216,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+)

@@ -276,6 +276,7 @@ def build_scan_information(
         cov_inv_cols = np.asarray(build_chunk_jitted(z_batch_j))
         for k in range(n_chunk):
             cov_inv_s[:, j_list[k]] = cov_inv_cols[k, :]
+    # Symmetrize for numerical stability (theory gives symmetric P^T tilde N^{-1} P)
     cov_inv_s = 0.5 * (cov_inv_s + cov_inv_s.T)
 
     try:

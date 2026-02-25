@@ -169,13 +169,7 @@ This is exact and includes atmospheric correlations through $\tilde N_s$.
 
 ### 3.4 Per-scan build of cov_inv and Pt_Ninv_d
 
-$[\mathrm{Cov}(\hat c_s)]^{-1} = P_s^\top \tilde N_s^{-1} P_s$ and $P_s^\top \tilde N_s^{-1} d_s$ are built in `cad/src/cad/parallel_solve/fisher.py`. Woodbury gives $\tilde N_s^{-1}$ applied via $M_s = C_a^{-1} + W^\top N^{-1} W$: column $j$ of the inverse covariance requires one $M_s$ solve with RHS $W^\top N^{-1} z_j$ ($z_j$ unit on samples hitting pixel $j$); $P_s^\top \tilde N_s^{-1} d_s$ requires one $M_s$ solve with RHS $W^\top N^{-1} d$, then $y = N^{-1}d - N^{-1} W u$ and $P^\top y$. Batched CG over columns is used. Point estimate:
-
-$$
-\hat c_s = [\mathrm{Cov}(\hat c_s)]^{-1 \,-1} \cdot \bigl(P_s^\top \tilde N_s^{-1} d_s\bigr)
-$$
-
-with mean subtraction for gauge. Requires JAX/GPU (set `CUDA_VISIBLE_DEVICES` per process).
+$[\mathrm{Cov}(\hat c_s)]^{-1} = P_s^\top \tilde N_s^{-1} P_s$ and $P_s^\top \tilde N_s^{-1} d_s$ are built in `cad/src/cad/parallel_solve/fisher.py`. Woodbury gives $\tilde N_s^{-1}$ applied via $M_s = C_a^{-1} + W^\top N^{-1} W$: column $j$ of the inverse covariance requires one $M_s$ solve with RHS $W^\top N^{-1} z_j$ ($z_j$ unit on samples hitting pixel $j$); $P_s^\top \tilde N_s^{-1} d_s$ requires one $M_s$ solve with RHS $W^\top N^{-1} d$, then $y = N^{-1}d - N^{-1} W u$ and $P^\top y$. Batched CG over columns is used. Point estimate: solve $[\mathrm{Cov}(\hat c_s)]^{-1} x = P_s^\top \tilde N_s^{-1} d_s$ for $x = \hat c_s$, then apply mean subtraction for gauge. Requires JAX/GPU (set `CUDA_VISIBLE_DEVICES` per process).
 
 ### 3.5 Single-scan implementation mapping
 
@@ -235,7 +229,9 @@ This is exactly the global marginalized ML equation in the LaTeX derivation.
 
 So exact joint augmented and exact global marginalized systems are equivalent for the CMB point estimate.
 
-### 4.3 Exact parallel joint implementation
+### 4.3 Exact parallel joint implementation (ML only)
+
+No $C_c^{-1}$ term is used anywhere in the parallel path; the global solution is pure ML.
 
 In `cad/analysis_parallel/run_synthesis.py` and `cad/src/cad/parallel_solve/synthesize_scan.py`:
 
@@ -245,21 +241,22 @@ $$
 [\mathrm{Cov}(\hat c)]^{-1}_{\mathrm{tot}} \, \hat c = (P^\top \tilde N^{-1} d)_{\mathrm{tot}}.
 $$
 
-Each scan NPZ contributes cov_inv and Pt_Ninv_d; indices are mapped to the global observed set via `global_to_obs`. The linear solve is performed on CPU (e.g. Cholesky or `scipy.linalg.solve`). Gauge: subtract mean of $\hat c$ on observed pixels. Then:
+Each scan NPZ contributes cov_inv and Pt_Ninv_d; indices are mapped to the global observed set via `global_to_obs`. The linear solve (cov_inv_tot @ c_hat = Pt_Ninv_d_tot) is performed with the same math either on GPU (JAX `linalg.solve`, when available) or on CPU (scipy). The dense precision matrix must be formed to save it; CG could be used for the solve instead of a direct Cholesky/solve, but with the matrix already formed the direct solve is simple and on GPU is efficient. Gauge: subtract mean of $\hat c$ on observed pixels. Then:
 
 - `c_hat_obs`: `(n_obs_global,)`
 - embed to full `c_hat_full_mk`: `(n_pix_cmb,)`.
 
-`precision_diag_total` is the diagonal of the summed inverse covariance; `var_diag_total` is set to the reciprocal where positive (approximation to diagonal of the global covariance). Pixels with no contribution are `zero_precision_mask` with `var_diag_total = \infty`.
+`precision_diag_total` is the diagonal of the summed inverse covariance; `var_diag_total` is set to the reciprocal where positive (approximation to diagonal of the global covariance). Pixels with no contribution are `zero_precision_mask` with `var_diag_total = \infty`. The dense precision matrix `cov_inv_tot` is always saved.
 
 ### 4.4 Joint stored outputs
 
-Saved in combined NPZ:
+Saved in combined NPZ (`recon_combined_ml.npz`):
 
-- `bbox_ix0`, `bbox_iy0`, `nx`, `ny`, `obs_pix_global`
+- `bbox_ix0`, `bbox_iy0`, `nx`, `ny`, `pixel_size_deg`, `obs_pix_global`
 - `c_hat_obs`, `c_hat_full_mk`
 - `precision_diag_total`, `var_diag_total`, `zero_precision_mask`
-- `n_scans`, `estimator_mode`
+- `cov_inv_tot` (dense precision matrix, n_obs x n_obs)
+- `n_scans`, `n_scans_used`, `estimator_mode`
 
 ---
 

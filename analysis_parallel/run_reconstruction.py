@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 # Parameters (override via argv or edit)
 BASE_DIR = Path(__file__).resolve().parent
@@ -59,7 +60,7 @@ def _worker(
 
     layout = load_layout(layout_path)
     done = 0
-    for idx in scan_indices:
+    for idx in tqdm(scan_indices, desc=("gpu%i" % gpu_id), leave=True):
         run_one_scan(
             layout,
             idx,

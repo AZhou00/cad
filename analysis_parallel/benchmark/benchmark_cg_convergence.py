@@ -6,9 +6,15 @@ Uses one scan from benchmark_data; builds layout in memory. Saves all relevant
 info to benchmark_cg_convergence.txt (data source, iters, tol, and what
 convergence means).
 
-CPU solve: joint (c, a0) system (different matrix). GPU solve: single M_s
-system (M_s = C_a^{-1} + W^T N^{-1} W). They are not the same linear system,
-so iteration counts can differ.
+CPU and GPU solve *different* linear systems; iteration counts are not comparable:
+- CPU: joint augmented system [P' N^{-1} P, P' N^{-1} W; W' N^{-1} P, M] [c; a0] = rhs
+  (solve_single_scan in cad.direct_solve.reconstruct_scan).
+- GPU: single M_s system M_s x = rhs with M_s = C_a^{-1} + W' N^{-1} W
+  (run_one_M_s_solve_converged; Fisher uses many such solves per scan).
+
+Production uses cg_tol=1e-3, cg_maxiter=512. Recommend running this script and
+checking that GPU (M_s) iters stay below 512 for your data; if not, increase
+cg_maxiter in run_reconstruction.py and in fisher.CG_NITER.
 
 Run on a GPU node: ssh <node>, module load conda; module load gpu/1.0; conda activate jax;
   cd <repo_root>; python cad/analysis_parallel/benchmark/benchmark_cg_convergence.py
@@ -125,7 +131,8 @@ def main() -> None:
         "   One RHS for Pt_Ninv_d; Fisher builds many such solves per scan.",
         "",
         "Production: cg_tol=1e-3, cg_maxiter=512 (run_reconstruction.py and Fisher cg_niter).",
-        "CPU and GPU solve different matrices (joint vs atmosphere block), so iters differ.",
+        "CPU and GPU solve different matrices (joint vs M_s only), so iters are not comparable.",
+        "Recommendation: ensure GPU (M_s) iters < 512 for this scan; else increase cg_maxiter.",
         "",
     ]
     out_text = "\n".join(lines)
