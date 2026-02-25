@@ -18,15 +18,15 @@ CAD_DIR = BASE_DIR.parent
 if str(CAD_DIR / "src") not in sys.path:
     sys.path.insert(0, str(CAD_DIR / "src"))
 
-# Hardcoded paths (edit for another observation)
-DATASET_NAME = "ra0hdec-59.75"
-FIELD_ID = "101706388"
-OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
-LAYOUT_NPZ = OUT_BASE / DATASET_NAME / FIELD_ID / "layout.npz"
-SCAN_NPZ_DIR = OUT_BASE / DATASET_NAME / FIELD_ID / "scans"
-OUT_NPZ = OUT_BASE / DATASET_NAME / FIELD_ID / "recon_combined_ml.npz"
-
 from cad.parallel_solve import load_layout, run_synthesis
+
+# Hardcoded paths (edit for another observation)
+FIELD_ID = "ra0hdec-59.75"
+OBSERVATION_ID = "101706388"
+OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
+LAYOUT_NPZ = OUT_BASE / FIELD_ID / OBSERVATION_ID / "layout.npz"
+SCAN_NPZ_DIR = OUT_BASE / FIELD_ID / OBSERVATION_ID / "scans"
+OUT_NPZ = OUT_BASE / FIELD_ID / OBSERVATION_ID / "recon_combined_ml.npz"
 
 
 def main() -> None:

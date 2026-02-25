@@ -1,41 +1,52 @@
 #!/usr/bin/env python3
 """
-Plot combined ML reconstruction from the parallel pipeline (run_synthesis output).
-Uses hardcoded paths matching run_synthesis. Outputs to analysis_parallel/plots.
+Plot combined and per-scan reconstructions (parallel path output).
+
+Reads: OUT_BASE/field_id/observation_id/recon_combined_ml.npz and scans/scan_*_ml.npz.
+Builds naive coadd from DATA_DIR/field_id/observation_id/binned_tod_10arcmin/*.npz.
+Writes: OUT_BASE/field_id/observation_id/plots/
+
+Plots produced:
+  maps_naive_vs_combined_ml.png  — naive coadd vs recon combined (map stack)
+  power2d_naive_vs_combined_ml.png — 2D power spectrum naive vs combined
+  cl_naive_vs_combined_ml.png   — radial C_ell naive vs combined
+  maps_single_scan_naive_vs_point_ml.png — top N scans: left col naive per scan, right col point estimate
+  pixel_precision_scan0_scan1_ml.png — precision [Cov(hat c)]^{-1} for first two scans
+
+Usage:
+  python plot_reconstruction.py [field_id] [observation_id]
 """
 
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
-
-THIS_DIR = pathlib.Path(__file__).resolve().parent
-CAD_SRC = THIS_DIR.parent / "src"
-if str(CAD_SRC) not in sys.path:
-    sys.path.insert(0, str(CAD_SRC))
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import colors
 
+THIS_DIR = pathlib.Path(__file__).resolve().parent
+CAD_DIR = THIS_DIR.parent
+DATA_DIR = CAD_DIR / "data"
+OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
+
+if str(CAD_DIR / "src") not in sys.path:
+    sys.path.insert(0, str(CAD_DIR / "src"))
+
 from cad import map as map_util
 from cad import power
 
-# Hardcoded paths (edit for another observation)
-DATASET_NAME = "ra0hdec-59.75"
-FIELD_ID = "101706388"
-OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
-LAYOUT_NPZ = OUT_BASE / DATASET_NAME / FIELD_ID / "layout.npz"
-COMBINED_NPZ = OUT_BASE / DATASET_NAME / FIELD_ID / "recon_combined_ml.npz"
-SCAN_NPZ_DIR = OUT_BASE / DATASET_NAME / FIELD_ID / "scans"
-
-PLOTS_DIR = THIS_DIR / "plots"
-
+FIELD_ID = "ra0hdec-59.75"
+OBSERVATION_ID = "101706388"
 N_ELL_BINS = 128
-KDOTW_EXCLUDE_COS = 0.5
+PREFER_BINNED = "binned_tod_10arcmin"
+TOP_N_SCANS = 5
 
 
 def _img_from_vec(vec: np.ndarray, *, nx: int, ny: int) -> np.ndarray:
+    """vec: pix = iy + ix*ny. Return (ny, nx) with iy as rows."""
     v = np.asarray(vec, dtype=np.float64).reshape(int(nx), int(ny))
     return v.T
 
@@ -62,88 +73,145 @@ def _imshow(ax, img, *, extent, title: str, vmin=None, vmax=None, cmap="RdBu_r")
     cm = plt.get_cmap(cmap).copy()
     cm.set_bad(color=(1.0, 1.0, 1.0, 1.0))
     ax.set_facecolor("white")
-    im = ax.imshow(
-        img,
-        origin="lower",
-        extent=extent,
-        aspect="auto",
-        cmap=cm,
-        vmin=vmin,
-        vmax=vmax,
-        interpolation="none",
-    )
+    im = ax.imshow(img, origin="lower", extent=extent, aspect="auto", cmap=cm, vmin=vmin, vmax=vmax, interpolation="none")
     ax.set_title(title, fontsize=10)
     ax.set_xlabel("RA [deg]")
     ax.set_ylabel("Dec [deg]")
     return im
 
 
-def _plot_map_stack(
-    *,
+def _binned_tod_paths(obs_data_dir: pathlib.Path) -> list[pathlib.Path]:
+    binned_dirs = sorted([p for p in obs_data_dir.iterdir() if p.is_dir() and p.name.startswith("binned_tod_")])
+    if not binned_dirs:
+        return []
+    chosen = next((p for p in binned_dirs if p.name == PREFER_BINNED), binned_dirs[0])
+    return sorted([p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")])
+
+
+def _naive_coadd(scan_paths: list[pathlib.Path], bbox: map_util.BBox) -> tuple[np.ndarray, np.ndarray]:
+    s = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
+    c = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
+    for p in scan_paths:
+        with np.load(p, allow_pickle=False) as z:
+            eff_tod_mk = np.asarray(z["eff_tod_mk"])
+            pix_index = np.asarray(z["pix_index"], dtype=np.int64)
+        ok = np.isfinite(eff_tod_mk)
+        if not np.any(ok):
+            continue
+        ij = pix_index[ok]
+        ixg = ij[:, 0] - int(bbox.ix0)
+        iyg = ij[:, 1] - int(bbox.iy0)
+        in_box = (ixg >= 0) & (ixg < int(bbox.nx)) & (iyg >= 0) & (iyg < int(bbox.ny))
+        if not np.any(in_box):
+            continue
+        v = eff_tod_mk[ok].astype(np.float64, copy=False)[in_box]
+        np.add.at(s, (iyg[in_box], ixg[in_box]), v)
+        np.add.at(c, (iyg[in_box], ixg[in_box]), 1)
+    naive = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
+    hit = c > 0
+    naive[hit] = (s[hit] / c[hit]).astype(np.float32)
+    return naive, hit
+
+
+def _naive_coadd_one_scan(scan_path: pathlib.Path, bbox: map_util.BBox) -> np.ndarray:
+    """Naive coadd from a single scan; return (ny, nx)."""
+    with np.load(scan_path, allow_pickle=False) as z:
+        eff_tod_mk = np.asarray(z["eff_tod_mk"])
+        pix_index = np.asarray(z["pix_index"], dtype=np.int64)
+    ok = np.isfinite(eff_tod_mk)
+    s = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
+    c = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
+    if np.any(ok):
+        ij = pix_index[ok]
+        ixg = ij[:, 0] - int(bbox.ix0)
+        iyg = ij[:, 1] - int(bbox.iy0)
+        in_box = (ixg >= 0) & (ixg < int(bbox.nx)) & (iyg >= 0) & (iyg < int(bbox.ny))
+        if np.any(in_box):
+            v = eff_tod_mk[ok].astype(np.float64, copy=False)[in_box]
+            np.add.at(s, (iyg[in_box], ixg[in_box]), v)
+            np.add.at(c, (iyg[in_box], ixg[in_box]), 1)
+    out = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
+    hit = c > 0
+    out[hit] = (s[hit] / c[hit]).astype(np.float32)
+    return out
+
+
+def _load_scan_recon_map(npz_path: pathlib.Path) -> np.ndarray | None:
+    """Load single-scan npz; return (ny, nx) map (c_hat on full grid)."""
+    with np.load(npz_path, allow_pickle=True) as z:
+        nx = int(z["nx"])
+        ny = int(z["ny"])
+        obs_pix = np.asarray(z["obs_pix_global_scan"], dtype=np.int64)
+        c_obs = np.asarray(z["c_hat_scan_obs"], dtype=np.float64)
+    n_pix = nx * ny
+    c_full = np.zeros((n_pix,), dtype=np.float64)
+    c_full[obs_pix] = c_obs
+    return _img_from_vec(c_full, nx=nx, ny=ny)
+
+
+def _scan_npz_sort_key(p: pathlib.Path) -> int:
+    m = re.search(r"scan_(\d+)_", p.name)
+    return int(m.group(1)) if m else 0
+
+
+# --- Plot functions (called by main with preprocessed data) ---
+
+
+def plot_naive_vs_combined_maps(
     out_path: pathlib.Path,
-    imgs: list[np.ndarray],
-    titles: list[str],
+    naive: np.ndarray,
+    rec_masked: np.ndarray,
     extent: list[float],
     vmin: float,
     vmax: float,
-    cbar_label: str = "mK",
 ) -> None:
-    n = len(imgs)
-    if n == 0:
-        return
+    n = 2
     fig, axs = plt.subplots(n, 1, figsize=(9.0, 2.3 * n), dpi=150, sharex=True, sharey=True)
-    if n == 1:
-        axs = [axs]
-    ims = []
-    for i in range(n):
-        im = _imshow(axs[i], imgs[i], extent=extent, title=titles[i], vmin=vmin, vmax=vmax)
-        ims.append(im)
+    ims = [_imshow(axs[0], naive, extent=extent, title="Naive coadd [mK]", vmin=vmin, vmax=vmax),
+           _imshow(axs[1], rec_masked, extent=extent, title="Recon combined (ML) [mK]", vmin=vmin, vmax=vmax)]
     fig.subplots_adjust(right=0.86, hspace=0.25)
     pos = axs[-1].get_position()
     cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
-    fig.colorbar(ims[-1], cax=cax, orientation="vertical").set_label(cbar_label)
+    fig.colorbar(ims[-1], cax=cax, orientation="vertical").set_label("mK")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
 
-def _plot_power2d_comparison(
-    *,
+def plot_naive_vs_combined_power2d(
     out_path: pathlib.Path,
-    maps_2d_mk: list[tuple[str, np.ndarray]],
+    naive: np.ndarray,
+    rec_masked: np.ndarray,
     pixel_res_rad: float,
-    hit_mask_2d: np.ndarray,
+    hit_mask: np.ndarray,
 ) -> None:
-    if len(maps_2d_mk) == 0:
-        return
+    maps_2d_mk = [("Naive coadd", naive), ("Recon combined (ML)", rec_masked)]
     n_pan = len(maps_2d_mk)
     fig, axes = plt.subplots(1, n_pan, figsize=(4.8 * n_pan, 4.2), sharex=True, sharey=True, dpi=150)
-    if n_pan == 1:
-        axes = [axes]
-    vmin = vmax = None
+    vmin, vmax = None, None
     for _name, m2d in maps_2d_mk:
-        KX, KY, ps2d = power.power2d_from_map(map_2d_mk=m2d, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+        KX, KY, ps2d = power.power2d_from_map(map_2d_mk=m2d, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask)
         ps2d = np.ma.masked_invalid(ps2d * 1e6)
         disp = (np.abs(KX) <= 500.0) & (np.abs(KY) <= 500.0)
         vals = ps2d[disp].compressed()
-        if vals.size == 0:
-            continue
-        vmax_i = float(np.max(vals))
-        vmin_i = max(vmax_i * 1e-5, 1e-30)
-        vmax = vmax_i if vmax is None else max(vmax, vmax_i)
-        vmin = vmin_i if vmin is None else min(vmin, vmin_i)
+        if vals.size > 0:
+            vmax_i = float(np.max(vals))
+            vmin_i = max(vmax_i * 1e-5, 1e-30)
+            vmax = vmax_i if vmax is None else max(vmax, vmax_i)
+            vmin = vmin_i if vmin is None else min(vmin, vmin_i)
     if vmin is None or vmax is None:
+        plt.close(fig)
         return
-    norm = colors.LogNorm(vmin=float(vmin), vmax=float(vmax))
-    levels = np.logspace(np.log10(float(vmin)), np.log10(float(vmax)), 30)
+    norm = colors.LogNorm(vmin=vmin, vmax=vmax)
+    levels = np.logspace(np.log10(vmin), np.log10(vmax), 30)
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(color=(1.0, 1.0, 1.0, 1.0))
     cmap.set_under(cmap(0.0))
-    last_cf = None
+    cf = None
     for ax, (name, m2d) in zip(axes, maps_2d_mk, strict=True):
-        KX, KY, ps2d = power.power2d_from_map(map_2d_mk=m2d, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
+        KX, KY, ps2d = power.power2d_from_map(map_2d_mk=m2d, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask)
         ps2d = np.ma.masked_invalid(ps2d * 1e6)
-        last_cf = ax.contourf(KX, KY, ps2d, levels=levels, cmap=cmap, norm=norm, extend="min")
+        cf = ax.contourf(KX, KY, ps2d, levels=levels, cmap=cmap, norm=norm, extend="min")
         ax.set_title(name, fontsize=10)
         ax.set_xlabel(r"$\ell_x$ [rad$^{-1}$]")
         ax.set_aspect("equal", adjustable="box")
@@ -153,151 +221,19 @@ def _plot_power2d_comparison(
     fig.subplots_adjust(right=0.86, wspace=0.22)
     pos = axes[-1].get_position()
     cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
-    cb = fig.colorbar(last_cf, cax=cax, orientation="vertical", ticks=[float(vmin), float(vmax)])
-    cb.ax.set_yticklabels([f"{float(vmin):.0e}", f"{float(vmax):.0e}"])
+    cb = fig.colorbar(cf, cax=cax, orientation="vertical")
     cb.set_label(r"$C_\ell$ [$\mu K_{\rm CMB}^2$]")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
 
-def _exclude_ky_zero_row(KY: np.ndarray) -> np.ndarray:
-    ky_abs = np.abs(np.asarray(KY, dtype=np.float64))
-    ky_pos = ky_abs[ky_abs > 0.0]
-    if ky_pos.size == 0:
-        return np.ones_like(ky_abs, dtype=bool)
-    return ky_abs >= float(np.min(ky_pos))
-
-
-def _plot_nondegenerate(
-    *,
-    out_dir: pathlib.Path,
-    naive: np.ndarray,
-    rec: np.ndarray,
-    hit_mask_2d: np.ndarray,
-    pixel_res_rad: float,
-    extent: list[float],
-    w_mean: np.ndarray,
+def plot_naive_vs_combined_cl(
+    out_path: pathlib.Path,
+    ell: np.ndarray,
+    cl_naive: np.ndarray,
+    cl_rec: np.ndarray,
 ) -> None:
-    w_norm = float(np.hypot(float(w_mean[0]), float(w_mean[1])))
-    if not (np.isfinite(w_norm) and w_norm > 0):
-        return
-    KX, KY, ps_co = power.power2d_from_map(map_2d_mk=naive, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
-    _, _, ps_re = power.power2d_from_map(map_2d_mk=rec, pixel_res_rad=pixel_res_rad, hit_mask_2d=hit_mask_2d)
-    ell = np.sqrt(KX * KX + KY * KY)
-    denom = np.maximum(ell * w_norm, 1e-300)
-    cosang = (KX * float(w_mean[0]) + KY * float(w_mean[1])) / denom
-    keep = np.isfinite(cosang) & (np.abs(cosang) >= float(KDOTW_EXCLUDE_COS)) & _exclude_ky_zero_row(KY)
-    ps_co_m = np.ma.masked_invalid(np.where(keep, ps_co * 1e6, np.nan))
-    ps_re_m = np.ma.masked_invalid(np.where(keep, ps_re * 1e6, np.nan))
-    disp = (np.abs(KX) <= 500.0) & (np.abs(KY) <= 500.0)
-    vals = np.concatenate([ps_co_m[disp].compressed(), ps_re_m[disp].compressed()])
-    if vals.size == 0:
-        return
-    vmax = float(np.max(vals))
-    vmin = max(vmax * 1e-5, 1e-30)
-    norm = colors.LogNorm(vmin=vmin, vmax=vmax)
-    levels = np.logspace(np.log10(vmin), np.log10(vmax), 30)
-    fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.2), sharex=True, sharey=True, dpi=150)
-    cmap = plt.get_cmap("viridis").copy()
-    cmap.set_bad(color=(1.0, 1.0, 1.0, 1.0))
-    cmap.set_under(cmap(0.0))
-    cf0 = axes[0].contourf(KX, KY, ps_co_m, levels=levels, cmap=cmap, norm=norm, extend="min")
-    axes[1].contourf(KX, KY, ps_re_m, levels=levels, cmap=cmap, norm=norm, extend="min")
-    axes[0].set_title("Naive coadd (non-degenerate modes)", fontsize=10)
-    axes[1].set_title("Recon coadd (non-degenerate modes)", fontsize=10)
-    for ax in axes:
-        ax.set_xlabel(r"$\ell_x$ [rad$^{-1}$]")
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xlim(-500, 500)
-        ax.set_ylim(-500, 500)
-    axes[0].set_ylabel(r"$\ell_y$ [rad$^{-1}$]")
-    fig.subplots_adjust(right=0.86, wspace=0.22)
-    pos = axes[1].get_position()
-    cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
-    cb = fig.colorbar(cf0, cax=cax, orientation="vertical", ticks=[vmin, vmax])
-    cb.ax.set_yticklabels([f"{vmin:.0e}", f"{vmax:.0e}"])
-    cb.set_label(r"$C_\ell$ [$\mu K_{\rm CMB}^2$]")
-    fig.savefig(out_dir / "maps_coadd_vs_reconcoadd_power2d_nondegenerate_ml.png", bbox_inches="tight")
-    plt.close(fig)
-    ell_m, cl_co_m = power.radial_cl_1d_from_power2d(KX=KX, KY=KY, ps2d_mk2=ps_co, n_ell_bins=int(N_ELL_BINS), keep_mask_2d=keep)
-    _, cl_re_m = power.radial_cl_1d_from_power2d(KX=KX, KY=KY, ps2d_mk2=ps_re, n_ell_bins=int(N_ELL_BINS), keep_mask_2d=keep)
-    fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
-    ax.plot(ell_m, cl_co_m, color="k", lw=2.0, label="naive coadd (non-degenerate)")
-    ax.plot(ell_m, cl_re_m, color="C3", lw=2.5, label="recon coadd (non-degenerate)")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel(r"$C_\ell$ [mK$^2$]")
-    ax.grid(True, which="both", alpha=0.2)
-    ax.legend(fontsize=8, loc="best")
-    fig.tight_layout()
-    fig.savefig(out_dir / "cl_nondegenerate_ml.png", bbox_inches="tight")
-    plt.close(fig)
-
-
-def main() -> None:
-    from cad.parallel_solve import load_layout
-
-    if not COMBINED_NPZ.exists():
-        raise RuntimeError(f"Combined reconstruction not found: {COMBINED_NPZ}. Run run_synthesis.py first.")
-    if not LAYOUT_NPZ.exists():
-        raise RuntimeError(f"Layout not found: {LAYOUT_NPZ}. Run build_layout.py first.")
-
-    layout = load_layout(LAYOUT_NPZ)
-    bbox = map_util.BBox(ix0=layout.bbox_ix0, ix1=layout.bbox_ix0 + layout.nx - 1, iy0=layout.bbox_iy0, iy1=layout.bbox_iy0 + layout.ny - 1)
-    pixel_size_deg = layout.pixel_size_deg
-    pixel_res_rad = pixel_size_deg * np.pi / 180.0
-    extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
-
-    with np.load(COMBINED_NPZ, allow_pickle=False) as rc:
-        rec_full = _img_from_vec(np.asarray(rc["c_hat_full_mk"], dtype=np.float64), nx=layout.nx, ny=layout.ny)
-
-    s_naive = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
-    c_naive = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
-    for scan_path in layout.scan_paths:
-        if not pathlib.Path(scan_path).exists():
-            continue
-        with np.load(scan_path, allow_pickle=False) as z:
-            eff_tod_mk = np.asarray(z["eff_tod_mk"])
-            pix_index = np.asarray(z["pix_index"], dtype=np.int64)
-        ok = np.isfinite(eff_tod_mk)
-        if not bool(np.any(ok)):
-            continue
-        ij = pix_index[ok]
-        ixg = ij[:, 0] - int(bbox.ix0)
-        iyg = ij[:, 1] - int(bbox.iy0)
-        in_box = (ixg >= 0) & (ixg < int(bbox.nx)) & (iyg >= 0) & (iyg < int(bbox.ny))
-        if not bool(np.any(in_box)):
-            continue
-        v = eff_tod_mk[ok].astype(np.float64, copy=False)[in_box]
-        np.add.at(s_naive, (iyg[in_box], ixg[in_box]), v)
-        np.add.at(c_naive, (iyg[in_box], ixg[in_box]), 1)
-
-    naive = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
-    hit_mask = c_naive > 0
-    naive[hit_mask] = (s_naive[hit_mask] / c_naive[hit_mask]).astype(np.float32)
-    rec = np.where(hit_mask, np.asarray(rec_full, dtype=np.float64), np.nan).astype(np.float32, copy=False)
-
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    vmin, vmax = _robust_vmin_vmax(np.concatenate([naive.ravel(), rec.ravel()]))
-    _plot_map_stack(
-        out_path=PLOTS_DIR / "maps_coadd_vs_reconcoadd_ml.png",
-        imgs=[naive, rec],
-        titles=["Naive coadd (all scans) [mK]", "Recon combined (ML) [mK]"],
-        extent=extent,
-        vmin=vmin,
-        vmax=vmax,
-    )
-    _plot_power2d_comparison(
-        out_path=PLOTS_DIR / "maps_coadd_vs_reconcoadd_power2d_ml.png",
-        maps_2d_mk=[("Naive coadd", naive), ("Recon combined (ML)", rec)],
-        pixel_res_rad=pixel_res_rad,
-        hit_mask_2d=hit_mask,
-    )
-    ell, cl_naive = power.radial_cl_1d_from_map(map_2d_mk=naive, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=int(N_ELL_BINS))
-    _, cl_rec = power.radial_cl_1d_from_map(map_2d_mk=rec, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=int(N_ELL_BINS))
     fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
     ax.plot(ell, cl_naive, color="k", lw=2.0, label="naive coadd")
     ax.plot(ell, cl_rec, color="C3", lw=2.5, label="recon combined (ML)")
@@ -308,26 +244,122 @@ def main() -> None:
     ax.grid(True, which="both", alpha=0.2)
     ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
-    fig.savefig(PLOTS_DIR / "cl_ml.png", bbox_inches="tight")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
-    wind_path = SCAN_NPZ_DIR / "scan_0000_ml.npz"
-    if wind_path.exists():
-        with np.load(wind_path, allow_pickle=False) as z:
-            w = np.asarray(z["wind_deg_per_s"], dtype=np.float64).reshape(-1)
-        if w.size >= 2 and np.all(np.isfinite(w[:2])):
-            _plot_nondegenerate(
-                out_dir=PLOTS_DIR,
-                naive=naive,
-                rec=rec,
-                hit_mask_2d=hit_mask,
-                pixel_res_rad=pixel_res_rad,
-                extent=extent,
-                w_mean=w[:2],
-            )
 
-    print(f"Wrote plots to {PLOTS_DIR}", flush=True)
+def plot_single_scan_naive_vs_point(
+    out_path: pathlib.Path,
+    naive_per_scan: list[np.ndarray],
+    rec_per_scan: list[np.ndarray],
+    extent: list[float],
+    vmin: float,
+    vmax: float,
+) -> None:
+    n_rows = len(naive_per_scan)
+    if n_rows == 0:
+        return
+    fig, axs = plt.subplots(n_rows, 2, figsize=(10.0, 2.3 * n_rows), dpi=150, sharex=True, sharey=True)
+    if n_rows == 1:
+        axs = axs.reshape(1, -1)
+    im_last = None
+    for i in range(n_rows):
+        _imshow(axs[i, 0], naive_per_scan[i], extent=extent, title=f"Scan {i}: naive coadd [mK]", vmin=vmin, vmax=vmax)
+        im_last = _imshow(axs[i, 1], rec_per_scan[i], extent=extent, title=f"Scan {i}: point estimate [mK]", vmin=vmin, vmax=vmax)
+    fig.subplots_adjust(right=0.88, hspace=0.3, wspace=0.15)
+    pos = axs[-1, -1].get_position()
+    cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.015, pos.height])
+    fig.colorbar(im_last, cax=cax, orientation="vertical").set_label("mK")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_pixel_precision_first_two_scans(
+    out_path: pathlib.Path,
+    cov_inv_0: np.ndarray,
+    cov_inv_1: np.ndarray,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 5.0), dpi=150)
+    for ax, cov_inv, title in zip(axes, [cov_inv_0, cov_inv_1], ["Scan 0: precision [Cov(hat c)]^{-1}", "Scan 1: precision [Cov(hat c)]^{-1}"], strict=True):
+        v = np.abs(np.asarray(cov_inv, dtype=np.float64))
+        v_flat = v.ravel()
+        v_pos = v_flat[(v_flat > 0) & np.isfinite(v_flat)]
+        vmin = float(np.min(v_pos)) if v_pos.size > 0 else 1e-30
+        vmax = float(np.max(v_pos)) if v_pos.size > 0 else 1.0
+        im = ax.imshow(v, aspect="auto", norm=colors.LogNorm(vmin=vmin, vmax=vmax), cmap="viridis")
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("pixel index")
+        ax.set_ylabel("pixel index")
+        plt.colorbar(im, ax=ax, label="|precision|")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main(field_id: str, observation_id: str) -> None:
+    out_dir = OUT_BASE / field_id / observation_id
+    obs_data_dir = DATA_DIR / field_id / observation_id
+    combined_npz = out_dir / "recon_combined_ml.npz"
+    scan_dir = out_dir / "scans"
+    plots_dir = out_dir / "plots"
+
+    if not combined_npz.exists():
+        raise FileNotFoundError(f"Combined recon not found: {combined_npz}. Run run_synthesis.py first.")
+
+    with np.load(combined_npz, allow_pickle=True) as rc:
+        bbox_ix0 = int(rc["bbox_ix0"])
+        bbox_iy0 = int(rc["bbox_iy0"])
+        nx = int(rc["nx"])
+        ny = int(rc["ny"])
+        pixel_size_deg = float(rc["pixel_size_deg"])
+        rec_full = np.asarray(rc["c_hat_full_mk"], dtype=np.float64)
+
+    bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
+    extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
+    pixel_res_rad = pixel_size_deg * np.pi / 180.0
+    rec = _img_from_vec(rec_full, nx=nx, ny=ny)
+
+    tod_paths = _binned_tod_paths(obs_data_dir)
+    if not tod_paths:
+        raise FileNotFoundError(f"No binned TOD under {obs_data_dir}")
+    naive, hit_mask = _naive_coadd(tod_paths, bbox)
+    rec_masked = np.where(hit_mask & np.isfinite(rec), rec, np.nan).astype(np.float32, copy=False)
+
+    vmin, vmax = _robust_vmin_vmax(np.concatenate([naive.ravel(), rec_masked.ravel()]))
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    plot_naive_vs_combined_maps(plots_dir / "maps_naive_vs_combined_ml.png", naive, rec_masked, extent, vmin, vmax)
+    plot_naive_vs_combined_power2d(plots_dir / "power2d_naive_vs_combined_ml.png", naive, rec_masked, pixel_res_rad, hit_mask)
+
+    ell, cl_naive = power.radial_cl_1d_from_map(map_2d_mk=naive, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=N_ELL_BINS)
+    _, cl_rec = power.radial_cl_1d_from_map(map_2d_mk=rec_masked, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=N_ELL_BINS)
+    plot_naive_vs_combined_cl(plots_dir / "cl_naive_vs_combined_ml.png", ell, cl_naive, cl_rec)
+
+    scan_npzs = sorted(scan_dir.glob("scan_*_ml.npz"), key=_scan_npz_sort_key)[:TOP_N_SCANS]
+    if scan_npzs and len(tod_paths) >= len(scan_npzs):
+        naive_per_scan = [_naive_coadd_one_scan(tod_paths[i], bbox) for i in range(len(scan_npzs))]
+        rec_per_scan = []
+        for p in scan_npzs:
+            m = _load_scan_recon_map(p)
+            rec_per_scan.append(np.where(hit_mask & np.isfinite(m), m, np.nan).astype(np.float32) if m is not None else np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32))
+        vmin_s, vmax_s = _robust_vmin_vmax(np.concatenate([x.ravel() for x in naive_per_scan + rec_per_scan]))
+        plot_single_scan_naive_vs_point(plots_dir / "maps_single_scan_naive_vs_point_ml.png", naive_per_scan, rec_per_scan, extent, vmin_s, vmax_s)
+
+    cov_npzs = sorted(scan_dir.glob("scan_*_ml.npz"), key=_scan_npz_sort_key)[:2]
+    if len(cov_npzs) >= 2:
+        with np.load(cov_npzs[0], allow_pickle=True) as z:
+            cov_inv_0 = np.asarray(z["cov_inv"], dtype=np.float64)
+        with np.load(cov_npzs[1], allow_pickle=True) as z:
+            cov_inv_1 = np.asarray(z["cov_inv"], dtype=np.float64)
+        plot_pixel_precision_first_two_scans(plots_dir / "pixel_precision_scan0_scan1_ml.png", cov_inv_0, cov_inv_1)
+
+    print(f"Wrote plots to {plots_dir}", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    field_id = sys.argv[1] if len(sys.argv) >= 2 else FIELD_ID
+    observation_id = sys.argv[2] if len(sys.argv) >= 3 else OBSERVATION_ID
+    main(field_id=str(field_id), observation_id=str(observation_id))

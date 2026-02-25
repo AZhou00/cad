@@ -31,7 +31,9 @@ from cad.parallel_solve.layout import build_layout
 from cad.parallel_solve.reconstruct_scan import run_one_scan
 
 # Real data: single scan from benchmark_data (repr. of production binned TOD)
-BENCHMARK_DATA_DIR = BASE / "benchmark_data" / "ra0hdec-59.75" / "101706388"
+FIELD_ID = "ra0hdec-59.75"
+OBSERVATION_ID = "101706388"
+BENCHMARK_DATA_DIR = BASE / "benchmark_data" / FIELD_ID / OBSERVATION_ID
 SCAN_PATH = BENCHMARK_DATA_DIR / "0000_calibrated_scan000.npz"
 OUT_TXT = BASE / "benchmark_cg_convergence.txt"
 
@@ -44,7 +46,7 @@ def main() -> None:
         print(f"Benchmark scan not found: {SCAN_PATH}", file=sys.stderr)
         sys.exit(1)
 
-    layout = build_layout(field_id="101706388", scan_paths=[SCAN_PATH])
+    layout = build_layout(field_id=OBSERVATION_ID, scan_paths=[SCAN_PATH])
     cpu_iters: list[int] = [0]
 
     def cg_callback(_xk: np.ndarray) -> None:
@@ -105,39 +107,25 @@ def main() -> None:
     )
 
     lines = [
-        "CG convergence benchmark (real data)",
-        "=" * 50,
+        "CG convergence (real data, benchmark_data)",
+        "=" * 60,
         "",
-        "Data:",
-        f"  scan_path = {SCAN_PATH}",
-        f"  data_source = real (benchmark_data, one binned TOD scan)",
-        f"  n_scans_in_layout = {layout.n_scans}",
-        f"  n_obs = {layout.n_obs}, n_pix = {layout.n_pix}",
+        "Data",
+        f"   scan_path = {SCAN_PATH}",
+        f"   n_scans = {layout.n_scans}, n_obs = {layout.n_obs}, n_pix = {layout.n_pix}",
         "",
-        "Convergence parameters:",
-        f"  cg_tol = {CG_TOL} (relative tolerance)",
-        f"  cg_maxiter = {CG_MAXITER}",
+        "Joint solve (CPU): [P' N^{-1} P, P' N^{-1} W; W' N^{-1} P, M] [c; a0] = rhs",
+        "   Implemented by: cad.direct_solve.reconstruct_scan.solve_single_scan (CG)",
+        f"   ___ Benchmark: {cpu_iters[0]} iters to reach norm(r) <= {CG_TOL} * norm(rhs), maxiter={CG_MAXITER}.",
+        "   CG stops when relative residual <= cg_tol (dimensionless).",
         "",
-        "Measured iteration counts:",
-        f"  CPU (solve_single_scan, joint [c; a0] system): {cpu_iters[0]} iters",
-        f"  GPU (one M_s solve, Pt_Ninv_d RHS):             {gpu_iters} iters",
+        "M_s solve (GPU): M_s x = W' N^{-1} d, M_s = C_a^{-1} + W' N^{-1} W",
+        "   Implemented by: cad.parallel_solve.fisher.run_one_M_s_solve_converged",
+        f"   ___ Benchmark: {gpu_iters} iters to reach norm(r) <= {CG_TOL} * norm(rhs), maxiter={CG_MAXITER}.",
+        "   One RHS for Pt_Ninv_d; Fisher builds many such solves per scan.",
         "",
-        "Production (run_reconstruction.py): cg_tol=1e-3, cg_maxiter=512, Fisher cg_niter=512.",
-        "",
-        "What convergence means:",
-        "  - cg_tol is the relative tolerance: CG stops when norm(residual) <= tol * norm(rhs).",
-        "  - So tol=1e-3 means residual is at most 0.1% of the RHS norm (dimensionless).",
-        "  - The solution error (in mK) is problem-dependent; typically it is of order",
-        "    (tol * scale_of_rhs / smallest_singular_value). For well-conditioned problems",
-        "    and tol=1e-3, map-level errors are sub-percent of the reconstruction RMS.",
-        "  - Relaxing tol from 5e-4 to 1e-3 usually saves 20-40% iters with negligible",
-        "    impact on the final CMB map for typical SPT-like noise and atmosphere.",
-        "",
-        "Why CPU and GPU iteration counts differ:",
-        "  - CPU solves the joint augmented system [P^T N^{-1} P, P^T N^{-1} W; W^T N^{-1} P, M]",
-        "    for [c; a0] (large, block structure). GPU solves M_s x = rhs with",
-        "    M_s = C_a^{-1} + W^T N^{-1} W (atmosphere block only). Different matrices,",
-        "    different condition numbers and eigenvalue spectra, so different convergence.",
+        "Production: cg_tol=1e-3, cg_maxiter=512 (run_reconstruction.py and Fisher cg_niter).",
+        "CPU and GPU solve different matrices (joint vs atmosphere block), so iters differ.",
         "",
     ]
     out_text = "\n".join(lines)

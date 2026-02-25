@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Interactive 4-GPU reconstruction: build layout, then run scans in parallel on 4 GPUs.
+Reconstruction: build layout, then run scans in parallel on 4 GPUs.
 Skips scans that already have output. For use on a single node with 4 GPUs (e.g. after ssh to a GPU node).
 
-Input data: cad/data/<dataset_name>/<field_id>/ (e.g. cad/data/ra0hdec-59.75/101706388).
-Output: OUT_BASE / dataset_name / field_id / (layout.npz, scans/*.npz).
+Input data: cad/data/<field_id>/<observation_id>/ (e.g. cad/data/ra0hdec-59.75/101706388).
+Output: OUT_BASE / field_id / observation_id / (layout.npz, scans/*.npz).
 
 Usage:
   module load conda; module load gpu/1.0; conda activate jax
   cd <repo_root>
-  python cad/analysis_parallel/run_reconstruction.py [dataset_name] [field_id]
+  python cad/analysis_parallel/run_reconstruction.py [field_id] [observation_id]
 
 Example (from scratch for cad/data/ra0hdec-59.75/101706388):
   python cad/analysis_parallel/run_reconstruction.py ra0hdec-59.75 101706388
 
-If args omitted, uses DATASET_NAME and FIELD_ID below. After all scans: python run_synthesis.py (paths in that script must match).
+If args omitted, uses FIELD_ID and OBSERVATION_ID below. After all scans: python run_synthesis.py (paths in that script must match).
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 # Parameters (override via argv or edit)
 BASE_DIR = Path(__file__).resolve().parent
 CAD_DIR = BASE_DIR.parent
@@ -32,8 +34,8 @@ OUT_BASE = Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 N_GPUS = 4
 
 # Default data; argv can override
-DATASET_NAME = "ra0hdec-59.75"
-FIELD_ID = "101706388"
+FIELD_ID = "ra0hdec-59.75"
+OBSERVATION_ID = "101706388"
 
 # run_one_scan kwargs (optional)
 N_ELL_BINS = 128
@@ -76,21 +78,19 @@ def _worker(
 def main() -> None:
     argv = sys.argv[1:]
     if len(argv) >= 2:
-        dataset_name, field_id = str(argv[0]), str(argv[1])
+        field_id, observation_id = str(argv[0]), str(argv[1])
     else:
-        dataset_name, field_id = DATASET_NAME, FIELD_ID
+        field_id, observation_id = FIELD_ID, OBSERVATION_ID
 
-    layout_path = OUT_BASE / dataset_name / field_id / "layout.npz"
-    out_dir = OUT_BASE / dataset_name / field_id / "scans"
+    layout_path = OUT_BASE / field_id / observation_id / "layout.npz"
+    out_dir = OUT_BASE / field_id / observation_id / "scans"
 
-    # 1. Build layout (subprocess so this process does not import JAX)
-    build_cmd = [sys.executable, str(BASE_DIR / "build_layout.py"), dataset_name, field_id]
+    # Build layout (subprocess so this process does not import JAX)
+    build_cmd = [sys.executable, str(BASE_DIR / "build_layout.py"), field_id, observation_id]
     print("[build_layout]", " ".join(build_cmd), flush=True)
     subprocess.run(build_cmd, cwd=str(CAD_DIR.parent), check=True)
 
-    # 2. Which scans are left to do (no JAX import; numpy only)
-    import numpy as np
-
+    # Which scans are left to do
     with np.load(layout_path, allow_pickle=True) as z:
         n_scans = len(z["scan_paths"])
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +100,7 @@ def main() -> None:
         return
     print(f"Scans to do: {len(todo)} / {n_scans}", flush=True)
 
-    # 3. Partition by GPU: worker gpu_id gets indices where index % N_GPUS == gpu_id
+    # Partition by GPU: worker gpu_id gets indices where index % N_GPUS == gpu_id
     by_gpu: list[list[int]] = [[] for _ in range(N_GPUS)]
     for i in todo:
         by_gpu[i % N_GPUS].append(i)
@@ -108,7 +108,7 @@ def main() -> None:
         by_gpu[g].sort()
         print(f"  GPU {g}: {len(by_gpu[g])} scans", flush=True)
 
-    # 4. Run N_GPUS workers
+    # Run N_GPUS workers
     with mp.Pool(N_GPUS) as pool:
         results = pool.starmap(
             _worker,

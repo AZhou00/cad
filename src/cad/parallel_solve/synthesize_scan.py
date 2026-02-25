@@ -29,10 +29,12 @@ def run_synthesis(
     cov_inv_tot = np.zeros((n_obs, n_obs), dtype=np.float64)
     Pt_Ninv_d_tot = np.zeros((n_obs,), dtype=np.float64)
 
-    for scan_index in range(layout.n_scans):
+    # Use whatever scan artifacts exist (partial synthesis allowed)
+    existing = [i for i in range(layout.n_scans) if (scan_npz_dir / f"scan_{i:04d}_ml.npz").exists()]
+    if not existing:
+        raise FileNotFoundError(f"No scan_*_ml.npz found in {scan_npz_dir}")
+    for scan_index in existing:
         npz_path = scan_npz_dir / f"scan_{scan_index:04d}_ml.npz"
-        if not npz_path.exists():
-            raise FileNotFoundError(f"Missing scan artifact: {npz_path}")
         art = load_scan_artifact(npz_path)
         obs_pix_global_scan = art["obs_pix_global_scan"]
         cov_inv_s = art["cov_inv"]
@@ -90,5 +92,6 @@ def run_synthesis(
         var_diag_total=var_diag_total,
         zero_precision_mask=zero_precision_mask,
         n_scans=np.int64(layout.n_scans),
+        n_scans_used=np.int64(len(existing)),
     )
-    print(f"[write] {out_path} n_obs={n_obs}", flush=True)
+    print(f"[write] {out_path} n_obs={n_obs} n_scans_used={len(existing)}/{layout.n_scans}", flush=True)
