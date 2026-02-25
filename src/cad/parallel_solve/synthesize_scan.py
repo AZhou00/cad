@@ -3,7 +3,7 @@ Parallel solve: exact global synthesis from per-scan cov_inv and Pt_Ninv_d.
 
 Sum [Cov(hat c_s)]^{-1} and P^T tilde N^{-1} d at global observed indices; solve for hat c.
 We must form cov_inv_tot to save it; the solve (cov_inv_tot @ c_hat = RHS) is O(n_obs^3).
-Solve runs on GPU via JAX when available, else scipy on CPU. CG is an option for the solve
+Solve runs on GPU via JAX (fail if solve errors). CG is an option for the solve
 (matrix-free CG would avoid storing cov_inv_tot during solve but we still form it once to save).
 Most efficient with dense precision required: form once, solve on GPU (Cholesky/solve).
 The dense precision matrix cov_inv_tot (n_obs x n_obs) is always saved in the output NPZ.
@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import scipy.linalg as la
 from tqdm import tqdm
 
 from .layout import GlobalLayout
@@ -84,15 +83,7 @@ def run_synthesis(
     if np.any(good):
         cov_inv_good = cov_inv_tot[np.ix_(good, good)]
         Pt_Ninv_d_good = Pt_Ninv_d_tot[good]
-        try:
-            c_hat_good = _solve_synthesis_gpu(cov_inv_good, Pt_Ninv_d_good)
-        except Exception:
-            try:
-                c_hat_good = la.solve(cov_inv_good, Pt_Ninv_d_good, assume_a="sym", check_finite=False)
-            except la.LinAlgError as err:
-                raise RuntimeError(
-                    "Global synthesis solve failed (singular/ill-conditioned cov_inv_tot)."
-                ) from err
+        c_hat_good = _solve_synthesis_gpu(cov_inv_good, Pt_Ninv_d_good)
         c_hat_good = np.asarray(c_hat_good, dtype=np.float64)
         c_hat_obs[good] = c_hat_good
         c_hat_obs -= float(np.mean(c_hat_obs[good]))

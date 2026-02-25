@@ -58,27 +58,6 @@ def test_load_scan_artifact_keys_and_shapes():
         path.unlink(missing_ok=True)
 
 
-def test_load_scan_artifact_backward_compat_F_s_b_s():
-    """load_scan_artifact accepts legacy F_s, b_s keys."""
-    with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
-        path = Path(f.name)
-    try:
-        n_obs_scan = 2
-        np.savez_compressed(
-            path,
-            obs_pix_global_scan=np.arange(n_obs_scan, dtype=np.int64),
-            c_hat_scan_obs=np.zeros((n_obs_scan,), dtype=np.float64),
-            F_s=np.eye(n_obs_scan, dtype=np.float64),
-            b_s=np.zeros((n_obs_scan,), dtype=np.float64),
-        )
-        art = load_scan_artifact(path)
-        assert "cov_inv" in art and "Pt_Ninv_d" in art
-        assert art["cov_inv"].shape == (n_obs_scan, n_obs_scan)
-        assert art["Pt_Ninv_d"].shape == (n_obs_scan,)
-    finally:
-        path.unlink(missing_ok=True)
-
-
 # --- Synthesis ---
 
 def test_synthesis_two_scans_minimal():

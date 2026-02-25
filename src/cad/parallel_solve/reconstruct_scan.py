@@ -229,18 +229,11 @@ def run_one_scan(
 
 
 def load_scan_artifact(npz_path: Path) -> dict:
-    """Load per-scan npz: obs_pix_global_scan, c_hat_scan_obs, cov_inv, Pt_Ninv_d (and optional metadata)."""
+    """Load per-scan npz written by run_one_scan. Returns obs_pix_global_scan, c_hat_scan_obs, cov_inv, Pt_Ninv_d."""
     with np.load(npz_path, allow_pickle=True) as z:
-        out = dict(
+        return dict(
             obs_pix_global_scan=np.asarray(z["obs_pix_global_scan"], dtype=np.int64).copy(),
             c_hat_scan_obs=np.asarray(z["c_hat_scan_obs"], dtype=np.float64).copy(),
+            cov_inv=np.asarray(z["cov_inv"], dtype=np.float64).copy(),
+            Pt_Ninv_d=np.asarray(z["Pt_Ninv_d"], dtype=np.float64).copy(),
         )
-        if "cov_inv" in z:
-            out["cov_inv"] = np.asarray(z["cov_inv"], dtype=np.float64).copy()
-            out["Pt_Ninv_d"] = np.asarray(z["Pt_Ninv_d"], dtype=np.float64).copy()
-        else:
-            out["cov_inv"] = np.asarray(z["F_s"], dtype=np.float64).copy()
-            out["Pt_Ninv_d"] = np.asarray(z["b_s"], dtype=np.float64).copy()
-        if "var_diag_scan_obs" in z:
-            out["var_diag_scan_obs"] = np.asarray(z["var_diag_scan_obs"], dtype=np.float64).copy()
-        return out
