@@ -14,7 +14,7 @@ from .layout import (
     load_scan_for_layout,
 )
 from .reconstruct_scan import load_scan_artifact, run_one_scan
-from .synthesize_scan import run_synthesis
+from .synthesize_scan import run_synthesis, run_synthesis_multi_obs
 
 __all__ = [
     "GlobalLayout",
@@ -26,5 +26,6 @@ __all__ = [
     "load_scan_for_layout",
     "run_one_scan",
     "run_synthesis",
+    "run_synthesis_multi_obs",
     "load_scan_artifact",
 ]

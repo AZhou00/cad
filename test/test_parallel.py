@@ -34,7 +34,7 @@ def test_load_layout_shape_and_props():
     assert layout.global_to_obs.dtype == np.int64
 
 
-# --- Scan artifact load (and backward compat) ---
+# --- Scan artifact load ---
 
 def test_load_scan_artifact_keys_and_shapes():
     """load_scan_artifact returns cov_inv, Pt_Ninv_d with correct shapes."""
@@ -42,18 +42,25 @@ def test_load_scan_artifact_keys_and_shapes():
         path = Path(f.name)
     try:
         n_obs_scan = 4
+        n_ell = 5
         np.savez_compressed(
             path,
             obs_pix_global_scan=np.arange(n_obs_scan, dtype=np.int64),
             c_hat_scan_obs=np.zeros((n_obs_scan,), dtype=np.float64),
             cov_inv=np.eye(n_obs_scan, dtype=np.float64),
             Pt_Ninv_d=np.zeros((n_obs_scan,), dtype=np.float64),
+            wind_deg_per_s=np.array([0.1, -0.05], dtype=np.float64),
+            wind_sigma_x_deg_per_s=np.float64(0.01),
+            wind_sigma_y_deg_per_s=np.float64(0.01),
+            ell_atm=np.linspace(10.0, 500.0, n_ell, dtype=np.float64),
+            cl_atm_mk2=np.ones((n_ell,), dtype=np.float64) * 1e-6,
         )
         art = load_scan_artifact(path)
         assert art["obs_pix_global_scan"].shape == (n_obs_scan,)
         assert art["c_hat_scan_obs"].shape == (n_obs_scan,)
         assert art["cov_inv"].shape == (n_obs_scan, n_obs_scan)
         assert art["Pt_Ninv_d"].shape == (n_obs_scan,)
+        assert art["wind_deg_per_s"].shape == (2,)
     finally:
         path.unlink(missing_ok=True)
 
@@ -86,6 +93,7 @@ def test_synthesis_two_scans_minimal():
             n_s = obs_scan.size
             cov_inv_s = np.eye(n_s, dtype=np.float64) * (1.0 + scan_index)
             Pt_Ninv_d_s = np.ones((n_s,), dtype=np.float64) * (0.5 + scan_index)
+            n_ell = 5
             np.savez_compressed(
                 scan_dir / f"scan_{scan_index:04d}_ml.npz",
                 scan_index=np.int64(scan_index),
@@ -93,6 +101,11 @@ def test_synthesis_two_scans_minimal():
                 c_hat_scan_obs=np.zeros((n_s,), dtype=np.float64),
                 cov_inv=cov_inv_s,
                 Pt_Ninv_d=Pt_Ninv_d_s,
+                wind_deg_per_s=np.array([0.0, 0.0], dtype=np.float64),
+                wind_sigma_x_deg_per_s=np.float64(0.0),
+                wind_sigma_y_deg_per_s=np.float64(0.0),
+                ell_atm=np.linspace(10.0, 500.0, n_ell, dtype=np.float64),
+                cl_atm_mk2=np.ones((n_ell,), dtype=np.float64) * 1e-6,
             )
         run_synthesis(layout, scan_dir, out_path)
         with np.load(out_path, allow_pickle=True) as z:

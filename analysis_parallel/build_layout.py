@@ -54,7 +54,7 @@ def main() -> None:
     if not scan_paths:
         raise RuntimeError(f"No scan NPZs under {obs_dir}")
     layout = build_layout(
-        field_id=observation_id,
+        field_id=field_id,
         scan_paths=scan_paths,
         min_hits_per_pix=min_hits_per_pix,
     )

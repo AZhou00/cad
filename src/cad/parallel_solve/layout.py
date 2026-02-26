@@ -1,8 +1,12 @@
 """
 Deterministic scan layout and global coordinate mapping for parallel solve.
 
-Single CMB bbox (union over all scans), pix = iy + ix*ny. Observed set is the
-union of hit pixels across scans above min_hits_per_pix. global_to_obs[pix] in [0, n_obs) or -1.
+Each scan can have a slightly different sky footprint. The layout uses:
+- bbox_cmb = union of per-scan bounding boxes (scan_bbox_from_pix_index then bbox_union),
+- obs_pix_global = union of hit pixels across all scans above min_hits_per_pix.
+So the global grid (nx, ny) and observed-pixel set accommodate all scans; synthesis
+accumulates at global indices and scans with smaller footprints contribute only on
+their observed subset. Pix convention: pix = iy + ix*ny. global_to_obs[pix] in [0, n_obs) or -1.
 """
 
 from __future__ import annotations

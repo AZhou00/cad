@@ -2,9 +2,32 @@
 """
 Exact global synthesis from per-scan cov_inv and Pt_Ninv_d. Thin CLI around parallel_solve.
 
-Loads per-scan npzs (cov_inv, Pt_Ninv_d, obs_pix_global_scan), accumulates cov_inv_tot and Pt_Ninv_d_tot,
-solves cov_inv_tot @ c_hat = Pt_Ninv_d_tot, writes combined map. Paths configurable at top of file.
-Run after all per-scan reconstructions complete.
+Accumulates cov_inv_tot and Pt_Ninv_d_tot from per-scan npzs, solves cov_inv_tot @ c_hat = Pt_Ninv_d_tot,
+embeds to full CMB grid, writes combined map and scan_metadata. Run after run_reconstruction.py.
+
+CLI
+---
+  python run_synthesis.py [observation_ids]
+
+  observation_ids: optional, comma-separated list (no spaces). If omitted, uses OBSERVATION_IDS below.
+  Examples:
+    python run_synthesis.py
+    python run_synthesis.py 101706388
+    python run_synthesis.py 101706388,101715260
+
+Input (per observation)
+-----------------------
+  OUT_BASE / FIELD_ID / <obs_id> / layout.npz
+  OUT_BASE / FIELD_ID / <obs_id> / scans / scan_0000_ml.npz, scan_0001_ml.npz, ...
+
+Output tree
+-----------
+  Single observation (one obs_id):
+    OUT_BASE / FIELD_ID / <obs_id> / recon_combined_ml.npz
+
+  Multiple observations (comma-separated obs_ids):
+    OUT_BASE / FIELD_ID / synthesized / recon_combined_ml.npz
+    OUT_BASE / FIELD_ID / synthesized / winds_list.npz
 """
 
 from __future__ import annotations
@@ -18,20 +41,23 @@ CAD_DIR = BASE_DIR.parent
 if str(CAD_DIR / "src") not in sys.path:
     sys.path.insert(0, str(CAD_DIR / "src"))
 
-from cad.parallel_solve import load_layout, run_synthesis
+from cad.parallel_solve import load_layout, run_synthesis, run_synthesis_multi_obs
 
-# Hardcoded paths (edit for another observation)
 FIELD_ID = "ra0hdec-59.75"
-OBSERVATION_ID = "101706388"
+OBSERVATION_IDS = ["101706388", "101715260"]
 OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
-LAYOUT_NPZ = OUT_BASE / FIELD_ID / OBSERVATION_ID / "layout.npz"
-SCAN_NPZ_DIR = OUT_BASE / FIELD_ID / OBSERVATION_ID / "scans"
-OUT_NPZ = OUT_BASE / FIELD_ID / OBSERVATION_ID / "recon_combined_ml.npz"
 
 
 def main() -> None:
-    layout = load_layout(LAYOUT_NPZ)
-    run_synthesis(layout, SCAN_NPZ_DIR, OUT_NPZ)
+    observation_ids = OBSERVATION_IDS if len(sys.argv) < 2 else [s.strip() for s in sys.argv[1].split(",") if s.strip()]
+    if not observation_ids:
+        observation_ids = OBSERVATION_IDS
+    if len(observation_ids) == 1:
+        obs_id = observation_ids[0]
+        layout = load_layout(OUT_BASE / FIELD_ID / obs_id / "layout.npz")
+        run_synthesis(layout, OUT_BASE / FIELD_ID / obs_id / "scans", OUT_BASE / FIELD_ID / obs_id / "recon_combined_ml.npz")
+    else:
+        run_synthesis_multi_obs(OUT_BASE, FIELD_ID, observation_ids, out_subdir="synthesized")
 
 
 if __name__ == "__main__":

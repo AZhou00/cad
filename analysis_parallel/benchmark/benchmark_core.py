@@ -137,10 +137,10 @@ def main() -> None:
                 t_load = float(np.mean(load_timings))
                 n_s = art["cov_inv"].shape[0]
 
-        t_setup = timings_dict.get("setup", 0.0)
-        t_solve = timings_dict.get("solve_single_scan", 0.0)
-        t_fisher = timings_dict.get("build_scan_information", 0.0)
-        t_write = timings_dict.get("write", 0.0)
+        t_setup = timings_dict["setup"]
+        t_solve = timings_dict["solve_single_scan"]
+        t_fisher = timings_dict["build_scan_information"]
+        t_write = timings_dict["write"]
         est_single_scan = t_setup + t_write + (t_solve + t_fisher) * SCALE
         with tempfile.TemporaryDirectory() as tmpdir2:
             t0 = time.perf_counter()

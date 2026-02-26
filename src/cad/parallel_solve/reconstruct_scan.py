@@ -46,7 +46,7 @@ def run_one_scan(
     pixel_size_deg = float(s0["pixel_size_deg"])
     pixel_res_rad = pixel_size_deg * np.pi / 180.0
 
-    w_x, w_y, _wind_diag, mask_good = cad.estimate_wind_deg_per_s(
+    w_x, w_y, wind_diag, mask_good = cad.estimate_wind_deg_per_s(
         eff_tod_mk=s0["eff_tod_mk"],
         eff_pos_deg=s0["eff_pos_deg"],
         boresight_pos_deg=s0["boresight_pos_deg"],
@@ -55,6 +55,8 @@ def run_one_scan(
         physical_degree=False,
     )
     wind_deg_per_s = (float(w_x), float(w_y))
+    wind_sigma_x = float(wind_diag["wind_sigma_x_deg_per_s"])
+    wind_sigma_y = float(wind_diag["wind_sigma_y_deg_per_s"])
 
     s = dict(s0)
     msk = np.asarray(mask_good, dtype=bool)
@@ -220,8 +222,12 @@ def run_one_scan(
         Pt_Ninv_d=Pt_Ninv_d_s,
         pixel_size_deg=np.float64(pixel_size_deg),
         wind_deg_per_s=np.array(wind_deg_per_s, dtype=np.float64),
+        wind_sigma_x_deg_per_s=np.float64(wind_sigma_x),
+        wind_sigma_y_deg_per_s=np.float64(wind_sigma_y),
         n_obs_scan=np.int64(n_obs_scan),
         estimator_mode=np.array("ML", dtype=object),
+        ell_atm=np.asarray(ell_i, dtype=np.float64),
+        cl_atm_mk2=np.asarray(cl_i, dtype=np.float64),
     )
     if timings is not None:
         timings["write"] = time.perf_counter() - t_write
@@ -229,11 +235,17 @@ def run_one_scan(
 
 
 def load_scan_artifact(npz_path: Path) -> dict:
-    """Load per-scan npz written by run_one_scan. Returns obs_pix_global_scan, c_hat_scan_obs, cov_inv, Pt_Ninv_d."""
+    """Load per-scan npz written by run_one_scan. Returns obs_pix_global_scan, c_hat_scan_obs, cov_inv, Pt_Ninv_d, wind_deg_per_s, wind_sigma_x/y, ell_atm, cl_atm_mk2."""
     with np.load(npz_path, allow_pickle=True) as z:
-        return dict(
+        out = dict(
             obs_pix_global_scan=np.asarray(z["obs_pix_global_scan"], dtype=np.int64).copy(),
             c_hat_scan_obs=np.asarray(z["c_hat_scan_obs"], dtype=np.float64).copy(),
             cov_inv=np.asarray(z["cov_inv"], dtype=np.float64).copy(),
             Pt_Ninv_d=np.asarray(z["Pt_Ninv_d"], dtype=np.float64).copy(),
+            wind_deg_per_s=np.asarray(z["wind_deg_per_s"], dtype=np.float64).copy(),
+            wind_sigma_x_deg_per_s=float(z["wind_sigma_x_deg_per_s"]),
+            wind_sigma_y_deg_per_s=float(z["wind_sigma_y_deg_per_s"]),
+            ell_atm=np.asarray(z["ell_atm"], dtype=np.float64).copy(),
+            cl_atm_mk2=np.asarray(z["cl_atm_mk2"], dtype=np.float64).copy(),
         )
+        return out
