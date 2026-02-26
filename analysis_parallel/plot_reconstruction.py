@@ -2,25 +2,34 @@
 """
 Plot combined and per-scan reconstructions (parallel path output).
 
-Reads: OUT_BASE/field_id/observation_id/recon_combined_ml.npz and scans/scan_*_ml.npz (or
-OUT_BASE/field_id/synthesized/ for multi-obs). Builds naive coadd from
-DATA_DIR/field_id/<obs_id>/binned_tod_10arcmin/*.npz.
-Writes: OUT_BASE/field_id/observation_id/plots/ or OUT_BASE/field_id/synthesized/plots/.
+Input: path to synthesis npz (recon_combined_ml.npz). Path is normally under OUT_BASE, e.g.
+  OUT_BASE/field_id/observation_id/recon_combined_ml.npz or OUT_BASE/field_id/synthesized/recon_combined_ml.npz.
+  field_id is inferred as path.parent.parent.name for binned TOD lookup (DATA_DIR/field_id/<obs_id>/).
+  Optional: out_dir/scans/scan_*_ml.npz for per-scan map/precision plots; binned TOD from scan_metadata obs ids.
+Output: out_dir/plots/ with out_dir = path.parent.
 
-Output plots (each function has a detailed docstring):
-- maps_naive_vs_combined_ml: naive coadd vs ML combined map.
-- power2d_naive_vs_combined_ml: 2D C_ell (lx, ly) naive vs ML.
-- cl_naive_vs_combined_ml: 1D radial C_ell naive vs ML.
-- pixel_precision_synthesized_ml: global precision [Cov(c_hat)]^{-1}.
-- cl_atm_distribution_ml: per-scan atmosphere C_ell mean +/- std (from scan_metadata).
-- wind_scatter_ml: (wx, wy) deg/s per scan with error bars (from scan_metadata).
-- maps_single_scan_naive_vs_point_ml: per-scan naive vs point estimate (first TOP_N_SCANS).
-- pixel_precision_scan0_scan1_ml: per-scan precision for scans 0 and 1.
-- maps_eigenmode_removed_ml, cl_eigenmode_removed_ml: maps/CL with top uncertain modes removed.
+Synthesis npz (recon_combined_ml.npz) structure:
+  - bbox_ix0, bbox_iy0, nx, ny, pixel_size_deg: scalars
+  - c_hat_full_mk: (n_pix,) ML map on full CMB grid [mK]
+  - c_hat_obs: (n_obs,) ML map on observed pixels
+  - obs_pix_global: (n_obs,) global pixel indices
+  - cov_inv_tot: (n_obs, n_obs) global precision
+  - good_mask: (n_obs,) bool
+  - uncertain_mode_vectors: (n_obs, k), uncertain_mode_variances: (k,)
+  - scan_metadata: object array of length n_scans; each element is a dict with
+    observation_id (str), scan_index (int), wind_deg_per_s (2,), wind_sigma_x_deg_per_s (float),
+    wind_sigma_y_deg_per_s (float), ell_atm (n_ell,), cl_atm_mk2 (n_ell,)
+
+Output plots (each function docstring lists I/O shapes):
+  maps_naive_vs_combined_ml, power2d_naive_vs_combined_ml, cl_naive_vs_combined_ml,
+  pixel_precision_synthesized_ml, cl_atm_distribution_ml, wind_scatter_ml,
+  maps_single_scan_naive_vs_point_ml, pixel_precision_scan0_scan1_ml,
+  maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
 
 Usage:
-  python plot_reconstruction.py [field_id] [observation_id]
-  python plot_reconstruction.py [field_id] synthesized [obs_id1,obs_id2,...]
+  python plot_reconstruction.py <path_to_recon_combined_ml.npz>
+  Path should be under OUT_BASE (e.g. .../field_id/observation_id/recon_combined_ml.npz). Observation ids
+  for binned TOD are read from scan_metadata; per-scan plots use out_dir/scans/ when that dir exists.
 """
 
 from __future__ import annotations
@@ -45,8 +54,7 @@ from cad import map as map_util
 from cad import power
 from cad.parallel_solve.reconstruct_scan import load_scan_artifact
 
-FIELD_ID = "ra0hdec-59.75"
-OBSERVATION_ID = "101706388"
+DEFAULT_SYNTHESIS_NPZ = OUT_BASE / "ra0hdec-59.75" / "101706388" / "recon_combined_ml.npz"
 N_ELL_BINS = 128
 BINNED_TOD_SUBDIR = "binned_tod_10arcmin"
 TOP_N_SCANS = 5
@@ -178,6 +186,8 @@ def plot_naive_vs_combined_maps(
     Naive coadd = pixel-wise mean of binned TOD (no atmosphere removal). ML combined =
     solution of (sum_s Cov(c_hat_s)^{-1}) c_hat = sum_s P' N^{-1} d_s after marginalizing
     atmosphere. Same color scale; highlights residual atmosphere in naive and cleaning in recon.
+
+    I/O: naive (ny, nx), rec_masked (ny, nx), extent [4], vmin/vmax scalars. Output: PNG to out_path.
     """
     n = 2
     fig, axs = plt.subplots(n, 1, figsize=(9.0, 2.3 * n), dpi=150, sharex=True, sharey=True)
@@ -204,6 +214,8 @@ def plot_naive_vs_combined_power2d(
 
     Uses same hit mask for both; shows where power is suppressed by the ML filter
     (e.g. along atmospheric dispersion). Units muK_CMB^2; log scale.
+
+    I/O: naive, rec_masked (ny, nx), pixel_res_rad scalar, hit_mask (ny, nx). Output: PNG to out_path.
     """
     maps_2d_mk = [("Naive coadd", naive), ("Recon combined (ML)", rec_masked)]
     n_pan = len(maps_2d_mk)
@@ -259,6 +271,8 @@ def plot_naive_vs_combined_cl(
 
     Quantifies total power per ell; ML should show lower power on large scales
     where atmosphere dominates. Both use same hit mask. Units mK^2.
+
+    I/O: ell (n_ell_bins,), cl_naive (n_ell_bins,), cl_rec (n_ell_bins,). Output: PNG to out_path.
     """
     fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
     ax.plot(ell, cl_naive, color="k", lw=2.0, label="naive coadd")
@@ -289,6 +303,9 @@ def plot_single_scan_naive_vs_point(
 
     Each row is one scan. Point estimate is c_hat_s from (P' tilde N_s^{-1} P) c_hat_s = P' tilde N_s^{-1} d_s.
     Wind (wx, wy) deg/s in title. Shows scan-to-scan variation and single-scan recon quality.
+
+    I/O: naive_per_scan, rec_per_scan list of (ny, nx), extent [4], vmin/vmax scalars,
+    wind_per_scan optional list of (wx, wy). Output: PNG to out_path.
     """
     n_rows = len(naive_per_scan)
     if n_rows == 0:
@@ -337,6 +354,8 @@ def plot_pixel_precision_first_two_scans(
 
     Log scale |precision|; structure reflects scan geometry and wind (degenerate directions have
     low precision). Same color range for comparison.
+
+    I/O: cov_inv_0, cov_inv_1 (n_obs_scan, n_obs_scan), wind_0/wind_1 optional (wx, wy). Output: PNG to out_path.
     """
     titles = ["Scan 0: precision [Cov(hat c)]^{-1}", "Scan 1: precision [Cov(hat c)]^{-1}"]
     if wind_0 is not None:
@@ -366,6 +385,8 @@ def plot_synthesized_precision(out_path: pathlib.Path, cov_inv_tot: np.ndarray) 
     Global precision (sum over scans) [Cov(c_hat)]^{-1} = sum_s P_s' tilde N_s^{-1} P_s.
 
     Log scale |precision|; higher where multiple scans or wind diversity add information.
+
+    I/O: cov_inv_tot (n_obs, n_obs). Output: PNG to out_path.
     """
     v = np.abs(np.asarray(cov_inv_tot, dtype=np.float64))
     vmin, vmax = _precision_vmin_vmax(v)
@@ -414,6 +435,10 @@ def plot_eigenmode_removed_maps(
     Uncertain modes = eigenvectors of [Cov(c_hat)]^{-1} with smallest eigenvalues (k ~ 0.1*n_good).
     Removes the most prior-dominated or degenerate directions; residual map highlights
     well-constrained modes. Returns (coadd_2d_filtered, rec_2d_filtered) for CL plot.
+
+    I/O: naive_2d (ny, nx), c_hat_obs (n_obs,), obs_pix_global (n_obs,), good_mask (n_obs,),
+    uncertain_vectors (n_obs, k), nx/ny scalars, extent [4], hit_mask (ny, nx). Output: PNG to out_path;
+    returns (coadd_2d (ny, nx), rec_2d (ny, nx)).
     """
     n_pix = nx * ny
     naive_vec = np.asarray(naive_2d, dtype=np.float64)
@@ -456,6 +481,8 @@ def plot_eigenmode_removed_cl(
 
     Same as cl_naive_vs_combined but for maps with top uncertain modes projected out;
     compares how much power lives in those modes for coadd vs recon.
+
+    I/O: coadd_2d_filtered, rec_2d_filtered (ny, nx), pixel_res_rad scalar, hit_mask (ny, nx). Output: PNG to out_path.
     """
     ell, cl_coadd = power.radial_cl_1d_from_map(
         map_2d_mk=coadd_2d_filtered, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=N_ELL_BINS
@@ -488,6 +515,9 @@ def plot_cl_distribution(
     Each scan contributes ell_atm and cl_atm_mk2 (atmosphere prior from coadd power).
     Plots mean(cl_atm_mk2) with shaded band [mean - std, mean + std] to show scan-to-scan
     variation in estimated atmospheric power. Requires common ell grid (same n_ell_bins).
+
+    I/O: scan_metadata list of dicts (each: ell_atm (n_ell,), cl_atm_mk2 (n_ell,), plus wind/observation_id/scan_index).
+    Output: PNG to out_path.
     """
     if not scan_metadata:
         return
@@ -523,6 +553,9 @@ def plot_wind_scatter(
 
     Scatter (wx, wy); xerr = wind_sigma_x_deg_per_s, yerr = wind_sigma_y_deg_per_s.
     Shows diversity of wind directions across scans and per-scan fit uncertainty.
+
+    I/O: scan_metadata list of dicts (each: wind_deg_per_s (2,), wind_sigma_x_deg_per_s, wind_sigma_y_deg_per_s scalars).
+    Output: PNG to out_path.
     """
     if not scan_metadata:
         return
@@ -545,27 +578,24 @@ def plot_wind_scatter(
     plt.close(fig)
 
 
-def main(
-    field_id: str,
-    observation_id: str,
-    observation_ids: list[str] | None = None,
-) -> None:
-    is_synthesized = observation_id == "synthesized"
-    if is_synthesized:
-        out_dir = OUT_BASE / field_id / "synthesized"
-        combined_npz = out_dir / "recon_combined_ml.npz"
-        scan_dir = None
-        obs_data_dirs = [DATA_DIR / field_id / oid for oid in (observation_ids or [])]
-    else:
-        out_dir = OUT_BASE / field_id / observation_id
-        combined_npz = out_dir / "recon_combined_ml.npz"
-        scan_dir = out_dir / "scans"
-        obs_data_dirs = [DATA_DIR / field_id / observation_id]
+def main(synthesis_npz: pathlib.Path) -> None:
+    """
+    Load synthesis npz, optional scan npzs and binned TOD; write all plots.
 
-    plots_dir = out_dir / "plots"
+    Reads from synthesis_npz: bbox_*, nx, ny, pixel_size_deg, c_hat_full_mk (n_pix,), c_hat_obs (n_obs,),
+    obs_pix_global (n_obs,), cov_inv_tot (n_obs, n_obs), good_mask (n_obs,), uncertain_mode_vectors (n_obs, k),
+    scan_metadata (list of dicts). out_dir = synthesis_npz.parent; field_id = synthesis_npz.parent.parent.name.
+    Observation ids for binned TOD from scan_metadata; scan_dir = out_dir/scans if present. Writes to out_dir/plots/.
+    """
+    combined_npz = pathlib.Path(synthesis_npz).resolve()
     if not combined_npz.exists():
         raise FileNotFoundError(f"Combined recon not found: {combined_npz}. Run run_synthesis.py first.")
+    out_dir = combined_npz.parent
+    field_id = combined_npz.parent.parent.name
+    scan_dir = out_dir / "scans"
+    scan_dir = scan_dir if scan_dir.is_dir() else None
 
+    plots_dir = out_dir / "plots"
     with np.load(combined_npz, allow_pickle=True) as rc:
         bbox_ix0 = int(rc["bbox_ix0"])
         bbox_iy0 = int(rc["bbox_iy0"])
@@ -580,6 +610,9 @@ def main(
         uncertain_vectors = np.asarray(rc["uncertain_mode_vectors"], dtype=np.float64)
         scan_metadata = rc["scan_metadata"].tolist() if "scan_metadata" in rc else []
 
+    obs_ids_from_meta = list(dict.fromkeys(m["observation_id"] for m in scan_metadata))
+    obs_data_dirs = [DATA_DIR / field_id / oid for oid in obs_ids_from_meta]
+
     bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
     extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
     pixel_res_rad = pixel_size_deg * np.pi / 180.0
@@ -588,8 +621,6 @@ def main(
     tod_paths: list[pathlib.Path] = []
     for d in obs_data_dirs:
         tod_paths.extend(_binned_tod_paths(d))
-    if not tod_paths and not is_synthesized:
-        raise FileNotFoundError(f"No binned TOD under {obs_data_dirs}")
     naive, hit_mask = _naive_coadd(tod_paths, bbox) if tod_paths else (np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32), np.zeros((int(bbox.ny), int(bbox.nx)), dtype=bool))
     if not np.any(hit_mask) and tod_paths:
         hit_mask = np.isfinite(naive)
@@ -664,7 +695,5 @@ def main(
 
 
 if __name__ == "__main__":
-    field_id = sys.argv[1] if len(sys.argv) >= 2 else FIELD_ID
-    observation_id = sys.argv[2] if len(sys.argv) >= 3 else OBSERVATION_ID
-    observation_ids = [s.strip() for s in sys.argv[3].split(",")] if len(sys.argv) > 3 else None
-    main(field_id=str(field_id), observation_id=str(observation_id), observation_ids=observation_ids)
+    synthesis_npz = pathlib.Path(sys.argv[1]) if len(sys.argv) >= 2 else DEFAULT_SYNTHESIS_NPZ
+    main(synthesis_npz=synthesis_npz)

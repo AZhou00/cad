@@ -27,7 +27,9 @@ Output tree
 
   Multiple observations (comma-separated obs_ids):
     OUT_BASE / FIELD_ID / synthesized / recon_combined_ml.npz
-    OUT_BASE / FIELD_ID / synthesized / winds_list.npz
+
+  Both paths write a single npz with the same structure (c_hat_*, cov_inv_tot, scan_metadata, etc.).
+  scan_metadata is a list of per-scan dicts (observation_id, scan_index, wind_deg_per_s, wind_sigma_*, ell_atm, cl_atm_mk2).
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ if str(CAD_DIR / "src") not in sys.path:
 from cad.parallel_solve import load_layout, run_synthesis, run_synthesis_multi_obs
 
 FIELD_ID = "ra0hdec-59.75"
-OBSERVATION_IDS = ["101706388", "101715260"]
+OBSERVATION_IDS = ["101724132"]
 OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 
 
@@ -55,7 +57,12 @@ def main() -> None:
     if len(observation_ids) == 1:
         obs_id = observation_ids[0]
         layout = load_layout(OUT_BASE / FIELD_ID / obs_id / "layout.npz")
-        run_synthesis(layout, OUT_BASE / FIELD_ID / obs_id / "scans", OUT_BASE / FIELD_ID / obs_id / "recon_combined_ml.npz")
+        run_synthesis(
+            layout,
+            OUT_BASE / FIELD_ID / obs_id / "scans",
+            OUT_BASE / FIELD_ID / obs_id / "recon_combined_ml.npz",
+            observation_id=obs_id,
+        )
     else:
         run_synthesis_multi_obs(OUT_BASE, FIELD_ID, observation_ids, out_subdir="synthesized")
 

@@ -30,16 +30,34 @@ def _solve_synthesis_gpu(cov_inv_good: np.ndarray, Pt_Ninv_d_good: np.ndarray) -
     return np.asarray(x, dtype=np.float64)
 
 
+def _scan_meta_entry(
+    observation_id: str,
+    scan_index: int,
+    art: dict,
+) -> dict:
+    """One scan_metadata dict; same keys for single- and multi-obs."""
+    return {
+        "observation_id": observation_id,
+        "scan_index": scan_index,
+        "wind_deg_per_s": np.asarray(art["wind_deg_per_s"], dtype=np.float64).copy(),
+        "wind_sigma_x_deg_per_s": art["wind_sigma_x_deg_per_s"],
+        "wind_sigma_y_deg_per_s": art["wind_sigma_y_deg_per_s"],
+        "ell_atm": art["ell_atm"].copy(),
+        "cl_atm_mk2": art["cl_atm_mk2"].copy(),
+    }
+
+
 def run_synthesis(
     layout: GlobalLayout,
     scan_npz_dir: Path,
     out_path: Path,
+    observation_id: str = "",
     timings: dict | None = None,
 ) -> None:
     """
     Exact marginalized synthesis: accumulate cov_inv_tot and Pt_Ninv_d_tot from per-scan npzs,
     solve cov_inv_tot @ c_hat_obs = Pt_Ninv_d_tot, embed to full CMB grid.
-    Always saves the dense precision matrix cov_inv_tot (n_obs x n_obs). If timings, keys: load_s, accumulate_s, solve_s.
+    Writes one npz with same structure as run_synthesis_multi_obs. observation_id labels the scans (e.g. single-obs id).
     """
     n_obs = layout.n_obs
     global_to_obs = layout.global_to_obs
@@ -66,14 +84,7 @@ def run_synthesis(
             Pt_Ninv_d_s_valid = Pt_Ninv_d_s[valid]
             cov_inv_tot[np.ix_(obs_idx_valid, obs_idx_valid)] += cov_inv_s_valid
             Pt_Ninv_d_tot[obs_idx_valid] += Pt_Ninv_d_s_valid
-        scan_metadata.append({
-            "scan_index": scan_index,
-            "wind_deg_per_s": np.asarray(art["wind_deg_per_s"], dtype=np.float64).copy(),
-            "wind_sigma_x_deg_per_s": art["wind_sigma_x_deg_per_s"],
-            "wind_sigma_y_deg_per_s": art["wind_sigma_y_deg_per_s"],
-            "ell_atm": art["ell_atm"].copy(),
-            "cl_atm_mk2": art["cl_atm_mk2"].copy(),
-        })
+        scan_metadata.append(_scan_meta_entry(observation_id, scan_index, art))
     if timings is not None:
         timings["load_s"] = 0.0
         timings["accumulate_s"] = time.perf_counter() - t0
@@ -146,12 +157,12 @@ def run_synthesis_multi_obs(
     observation_ids: list[str],
     out_subdir: str = "synthesized",
     timings: dict | None = None,
-) -> tuple[GlobalLayout, Path, Path]:
+) -> tuple[GlobalLayout, Path]:
     """
-    Load all scan npzs from OUT_BASE/field_id/obs_id/scans/ for each obs_id, build combined layout
-    (union of observed pixels), accumulate cov_inv and Pt_Ninv_d, solve, write to
-    OUT_BASE/field_id/<out_subdir>/recon_combined_ml.npz and winds_list.npz.
-    Returns (combined_layout, out_npz_path, winds_npz_path).
+    Load all scan npzs from OUT_BASE/field_id/obs_id/scans/ for each obs_id, build combined layout,
+    accumulate cov_inv and Pt_Ninv_d, solve, write single OUT_BASE/field_id/<out_subdir>/recon_combined_ml.npz.
+    Output npz has same structure as run_synthesis (scan_metadata includes observation_id per scan).
+    Returns (combined_layout, out_npz_path).
     """
     if not observation_ids:
         raise ValueError("observation_ids must be non-empty")
@@ -193,11 +204,10 @@ def run_synthesis_multi_obs(
 
     cov_inv_tot = np.zeros((n_obs, n_obs), dtype=np.float64)
     Pt_Ninv_d_tot = np.zeros((n_obs,), dtype=np.float64)
-    winds_list: list[tuple[str, int, float, float, float, float]] = []
     scan_metadata: list[dict] = []
 
     t0 = time.perf_counter()
-    for obs_id, scan_index, npz_path in tqdm(artifact_paths, desc="load scans", leave=True):
+    for obs_id, scan_index, npz_path in tqdm(artifact_paths, desc="load+accumulate", leave=True):
         art = load_scan_artifact(npz_path)
         obs_pix_global_scan = art["obs_pix_global_scan"]
         cov_inv_s = art["cov_inv"]
@@ -210,19 +220,7 @@ def run_synthesis_multi_obs(
             Pt_Ninv_d_s_valid = Pt_Ninv_d_s[valid]
             cov_inv_tot[np.ix_(obs_idx_valid, obs_idx_valid)] += cov_inv_s_valid
             Pt_Ninv_d_tot[obs_idx_valid] += Pt_Ninv_d_s_valid
-        w = art["wind_deg_per_s"]
-        sx = float(art["wind_sigma_x_deg_per_s"])
-        sy = float(art["wind_sigma_y_deg_per_s"])
-        winds_list.append((obs_id, scan_index, float(w[0]), float(w[1]), sx, sy))
-        scan_metadata.append({
-            "observation_id": obs_id,
-            "scan_index": scan_index,
-            "wind_deg_per_s": np.asarray(art["wind_deg_per_s"], dtype=np.float64).copy(),
-            "wind_sigma_x_deg_per_s": sx,
-            "wind_sigma_y_deg_per_s": sy,
-            "ell_atm": art["ell_atm"].copy(),
-            "cl_atm_mk2": art["cl_atm_mk2"].copy(),
-        })
+        scan_metadata.append(_scan_meta_entry(obs_id, scan_index, art))
     if timings is not None:
         timings["load_s"] = time.perf_counter() - t0
 
@@ -281,19 +279,5 @@ def run_synthesis_multi_obs(
         scan_metadata=np.array(scan_metadata, dtype=object),
     )
     np.savez_compressed(out_npz, **_out)
-
-    obs_ids_arr = np.array([t[0] for t in winds_list], dtype=object)
-    scan_indices = np.array([t[1] for t in winds_list], dtype=np.int64)
-    wind_deg_per_s = np.array([[t[2], t[3]] for t in winds_list], dtype=np.float64)
-    wind_sigma = np.array([[t[4], t[5]] for t in winds_list], dtype=np.float64)
-    winds_npz = out_dir / "winds_list.npz"
-    np.savez_compressed(
-        winds_npz,
-        observation_id=obs_ids_arr,
-        scan_index=scan_indices,
-        wind_deg_per_s=wind_deg_per_s,
-        wind_sigma_deg_per_s=wind_sigma,
-    )
     print(f"[write] {out_npz} n_obs={n_obs} n_scans={len(artifact_paths)}", flush=True)
-    print(f"[write] {winds_npz}", flush=True)
-    return combined_layout, out_npz, winds_npz
+    return combined_layout, out_npz
