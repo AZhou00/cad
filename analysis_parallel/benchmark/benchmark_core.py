@@ -41,6 +41,7 @@ N_REP = 5
 CG_SAMPLE = 20
 CG_FULL = 512
 SCALE = CG_FULL / CG_SAMPLE
+CG_SAMPLE_TOL = 1e-3
 
 
 def _rss_mb() -> float:
@@ -94,7 +95,7 @@ def main() -> None:
         timings = []
         for _ in range(N_REP):
             t0 = time.perf_counter()
-            build_layout(field_id=OBSERVATION_ID, scan_paths=[SCAN_PATH])
+            build_layout(field_id=FIELD_ID, scan_paths=[SCAN_PATH])
             timings.append(time.perf_counter() - t0)
         t_mean = float(np.mean(timings))
         rss = _rss_mb()
@@ -111,7 +112,7 @@ def main() -> None:
     if not SCAN_PATH.exists():
         lines.append("run_one_scan (single scan): SKIP (missing benchmark_data scan)")
     else:
-        layout_bench = build_layout(field_id=OBSERVATION_ID, scan_paths=[SCAN_PATH])
+        layout_bench = build_layout(field_id=FIELD_ID, scan_paths=[SCAN_PATH])
         timings_dict: dict[str, float] = {}
         t_load = None
         n_s = None
@@ -123,7 +124,7 @@ def main() -> None:
                 0,
                 out_dir,
                 cg_maxiter=CG_SAMPLE,
-                cg_tol=1.0,
+                cg_tol=CG_SAMPLE_TOL,
                 timings=timings_dict,
             )
             t_total = time.perf_counter() - t0
@@ -149,14 +150,14 @@ def main() -> None:
         lines.extend([
             "Joint solve (CPU): [P' N^{-1} P, P' N^{-1} W; W' N^{-1} P, M] [c; a0] = [P' N^{-1} d; W' N^{-1} d]",
             "   Implemented by: cad.direct_solve.reconstruct_scan.solve_single_scan (CG)",
-            f"   ___ Benchmark (short {CG_SAMPLE} iters): solve_single_scan {t_solve:.3f} s.",
+            f"   ___ Benchmark (short probe, max {CG_SAMPLE} iters at cg_tol={CG_SAMPLE_TOL:g}): solve_single_scan {t_solve:.3f} s.",
             f"   ___ Benchmark (full {CG_FULL} iters, cg_tol=1e-3): one-scan pipeline {t_full_512:.1f} s.",
-            f"   Scaled to {CG_FULL} iters: {t_solve * SCALE:.1f} s per scan.",
+            f"   Rough linear extrapolation to {CG_FULL} iters: {t_solve * SCALE:.1f} s per scan.",
             "",
             "Per-scan precision and RHS (GPU): Cov(hat c_s)^{-1} = P' tilde N_s^{-1} P, P' tilde N_s^{-1} d (Woodbury)",
             "   Implemented by: cad.parallel_solve.fisher.build_scan_information",
-            f"   ___ Benchmark (short {CG_SAMPLE} iters): build_scan_information {t_fisher:.3f} s.",
-            f"   Scaled to {CG_FULL} iters: {t_fisher * SCALE:.1f} s per scan.",
+            f"   ___ Benchmark (short probe, max {CG_SAMPLE} iters at cg_tol={CG_SAMPLE_TOL:g}): build_scan_information {t_fisher:.3f} s.",
+            f"   Rough linear extrapolation to {CG_FULL} iters: {t_fisher * SCALE:.1f} s per scan.",
             "",
             "Full single-scan pipeline (setup + joint solve + Fisher + write)",
             "   Implemented by: cad.parallel_solve.reconstruct_scan.run_one_scan",
@@ -195,13 +196,15 @@ def main() -> None:
         t_load_s = float(np.mean([td["load_s"] for td in timings_synth]))
         t_accum_s = float(np.mean([td["accumulate_s"] for td in timings_synth]))
         t_solve_s = float(np.mean([td["solve_s"] for td in timings_synth]))
+        t_modes_s = float(np.mean([td.get("uncertain_modes_s", 0.0) for td in timings_synth]))
+        t_write_s = float(np.mean([td.get("write_s", 0.0) for td in timings_synth]))
         rss = _rss_mb()
         n_obs = layout_synth.n_obs
         lines.extend([
             "Synthesis: (sum_s Cov(hat c_s)^{-1}) c_hat = sum_s P' tilde N_s^{-1} d_s (CPU only)",
             "   Implemented by: cad.parallel_solve.synthesize_scan.run_synthesis",
             f"   ___ Benchmark (2 scans, n_obs={n_obs}): total {t_synth:.6f} s (mean over {N_REP}), RSS {rss:.1f} MB.",
-            f"   Micro: load_s={t_load_s:.4f} s, accumulate_s={t_accum_s:.4f} s, solve_s={t_solve_s:.4f} s.",
+            f"   Micro: load_s={t_load_s:.4f} s, accumulate_s={t_accum_s:.4f} s, solve_s={t_solve_s:.4f} s, uncertain_modes_s={t_modes_s:.4f} s, write_s={t_write_s:.4f} s.",
             "   Solve is O(n_obs^3); for large n_obs synthesis is dominated by solve and I/O.",
             "",
         ])

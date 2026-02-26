@@ -3,9 +3,7 @@ Parallel solve: exact global synthesis from per-scan cov_inv and Pt_Ninv_d.
 
 Sum [Cov(hat c_s)]^{-1} and P^T tilde N^{-1} d at global observed indices; solve for hat c.
 We must form cov_inv_tot to save it; the solve (cov_inv_tot @ c_hat = RHS) is O(n_obs^3).
-Solve runs on GPU via JAX (fail if solve errors). CG is an option for the solve
-(matrix-free CG would avoid storing cov_inv_tot during solve but we still form it once to save).
-Most efficient with dense precision required: form once, solve on GPU (Cholesky/solve).
+Uncertain-mode diagnostics use a Lanczos low-rank eigensolve (smallest precision eigenvalues).
 The dense precision matrix cov_inv_tot (n_obs x n_obs) is always saved in the output NPZ.
 """
 
@@ -14,20 +12,117 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
 from .layout import GlobalLayout, load_layout
 from .reconstruct_scan import load_scan_artifact
 
+jax.config.update("jax_enable_x64", True)
 
-def _solve_synthesis_gpu(cov_inv_good: np.ndarray, Pt_Ninv_d_good: np.ndarray) -> np.ndarray:
-    """Solve cov_inv_good @ x = Pt_Ninv_d_good on GPU with JAX. Returns c_hat_good (n_good,)."""
-    import jax.numpy as jnp
+N_UNCERTAIN_MODES = 100
+LANCZOS_OVERSAMPLE = 64
+LANCZOS_MAXITER = 256
+LANCZOS_SEED = 0
+
+
+def _solve_synthesis(cov_inv_good: np.ndarray, Pt_Ninv_d_good: np.ndarray) -> np.ndarray:
+    """Single synthesis solve path: JAX dense solve."""
     A = jnp.asarray(cov_inv_good)
     b = jnp.asarray(Pt_Ninv_d_good)
     x = jnp.linalg.solve(A, b)
     return np.asarray(x, dtype=np.float64)
+
+
+def _lanczos_smallest_modes(
+    cov_inv_good: np.ndarray,
+    *,
+    n_modes: int = N_UNCERTAIN_MODES,
+    oversample: int = LANCZOS_OVERSAMPLE,
+    maxiter: int = LANCZOS_MAXITER,
+    seed: int = LANCZOS_SEED,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Approximate smallest eigenpairs of SPD precision matrix via Lanczos + Ritz projection.
+
+    Returns:
+      uncertain_variances: (k,) approximate covariance eigenvalues = 1 / lambda_min
+      uncertain_vectors: (n_good, k) corresponding approximate eigenvectors
+    """
+    n = int(cov_inv_good.shape[0])
+    if n == 0:
+        return np.empty((0,), dtype=np.float64), np.empty((0, 0), dtype=np.float64)
+    k = min(int(n_modes), n)
+    if k <= 0:
+        return np.empty((0,), dtype=np.float64), np.empty((n, 0), dtype=np.float64)
+
+    m = min(n, max(k + int(oversample), 2 * k))
+    m = min(m, int(maxiter))
+    m = max(m, k)
+
+    A_j = jnp.asarray(cov_inv_good)
+    Q = np.zeros((n, m), dtype=np.float64)
+    alpha = np.zeros((m,), dtype=np.float64)
+    beta = np.zeros((max(0, m - 1),), dtype=np.float64)
+
+    rng = np.random.default_rng(int(seed))
+    q = rng.standard_normal(n).astype(np.float64)
+    q /= np.linalg.norm(q) + 1e-30
+    q_prev = np.zeros((n,), dtype=np.float64)
+    b_prev = 0.0
+    m_eff = m
+
+    for j in tqdm(range(m), desc="lanczos-uncertain-modes", leave=True):
+        Q[:, j] = q
+        z = np.array(A_j @ jnp.asarray(q), dtype=np.float64, copy=True)
+        if j > 0:
+            z -= b_prev * q_prev
+        a_j = float(np.dot(q, z))
+        alpha[j] = a_j
+        z -= a_j * q
+
+        # Full re-orthogonalization for numerical stability.
+        if j > 0:
+            proj = Q[:, :j].T @ z
+            z -= Q[:, :j] @ proj
+            proj2 = Q[:, :j].T @ z
+            z -= Q[:, :j] @ proj2
+
+        if j == m - 1:
+            break
+        b_j = float(np.linalg.norm(z))
+        beta[j] = b_j
+        if b_j < 1e-14:
+            m_eff = j + 1
+            break
+        q_prev = q
+        q = z / b_j
+        b_prev = b_j
+
+    alpha = alpha[:m_eff]
+    beta = beta[: max(0, m_eff - 1)]
+    T = np.diag(alpha)
+    if beta.size > 0:
+        T += np.diag(beta, k=1) + np.diag(beta, k=-1)
+
+    evals_t, evecs_t = np.linalg.eigh(T)
+    idx = np.argsort(evals_t)[:k]
+    V_ritz = Q[:, :m_eff] @ evecs_t[:, idx]
+
+    # Orthonormalize and refine Rayleigh quotients.
+    V_ritz, _ = np.linalg.qr(V_ritz, mode="reduced")
+    V_ritz = V_ritz[:, :k]
+    AV = np.array(A_j @ jnp.asarray(V_ritz), dtype=np.float64, copy=False)
+    evals = np.sum(V_ritz * AV, axis=0)
+    order = np.argsort(evals)
+    evals = evals[order]
+    V_ritz = V_ritz[:, order]
+
+    evals_safe = np.maximum(evals, 1e-18)
+    uncertain_variances = 1.0 / evals_safe
+    return uncertain_variances.astype(np.float64), V_ritz.astype(np.float64)
 
 
 def _scan_meta_entry(
@@ -68,11 +163,16 @@ def run_synthesis(
     if not existing:
         raise FileNotFoundError(f"No scan_*_ml.npz found in {scan_npz_dir}")
 
-    t0 = time.perf_counter()
+    t_load = 0.0
+    t_accum = 0.0
     scan_metadata: list[dict] = []
     for scan_index in tqdm(existing, desc="load+accumulate", leave=True):
         npz_path = scan_npz_dir / f"scan_{scan_index:04d}_ml.npz"
+        t0 = time.perf_counter()
         art = load_scan_artifact(npz_path)
+        t_load += time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         obs_pix_global_scan = art["obs_pix_global_scan"]
         cov_inv_s = art["cov_inv"]
         Pt_Ninv_d_s = art["Pt_Ninv_d"]
@@ -85,25 +185,28 @@ def run_synthesis(
             cov_inv_tot[np.ix_(obs_idx_valid, obs_idx_valid)] += cov_inv_s_valid
             Pt_Ninv_d_tot[obs_idx_valid] += Pt_Ninv_d_s_valid
         scan_metadata.append(_scan_meta_entry(observation_id, scan_index, art))
+        t_accum += time.perf_counter() - t0
     if timings is not None:
-        timings["load_s"] = 0.0
-        timings["accumulate_s"] = time.perf_counter() - t0
+        timings["load_s"] = t_load
+        timings["accumulate_s"] = t_accum
 
-    zero_precision_mask = np.all(cov_inv_tot == 0.0, axis=1)
-    good = ~zero_precision_mask
+    precision_diag_total = np.diag(cov_inv_tot).copy()
+    good = precision_diag_total > 0.0
+    zero_precision_mask = ~good
     c_hat_obs = np.zeros((n_obs,), dtype=np.float64)
+
+    print(f"[solve] n_obs={n_obs} n_good={int(np.sum(good))}", flush=True)
     t0 = time.perf_counter()
     if np.any(good):
         cov_inv_good = cov_inv_tot[np.ix_(good, good)]
         Pt_Ninv_d_good = Pt_Ninv_d_tot[good]
-        c_hat_good = _solve_synthesis_gpu(cov_inv_good, Pt_Ninv_d_good)
+        c_hat_good = _solve_synthesis(cov_inv_good, Pt_Ninv_d_good)
         c_hat_good = np.asarray(c_hat_good, dtype=np.float64)
         c_hat_obs[good] = c_hat_good
         c_hat_obs -= float(np.mean(c_hat_obs[good]))
     if timings is not None:
         timings["solve_s"] = time.perf_counter() - t0
 
-    precision_diag_total = np.diag(cov_inv_tot).copy()
     var_diag_total = np.full((n_obs,), np.inf, dtype=np.float64)
     var_diag_total[good] = np.where(
         precision_diag_total[good] > 0.0,
@@ -116,16 +219,23 @@ def run_synthesis(
     c_hat_full_mk[layout.obs_pix_global] = c_hat_obs  # (n_pix_cmb,)
 
     n_good = int(np.sum(good))
+    t0 = time.perf_counter()
     if n_good > 0:
-        evals, evecs = np.linalg.eigh(cov_inv_tot[np.ix_(good, good)])
-        k = min(10, max(1, int(0.1 * n_good)))
-        uncertain_vectors = np.asarray(evecs[:, :k], dtype=np.float64)
-        uncertain_variances = np.asarray(1.0 / evals[:k], dtype=np.float64)
+        uncertain_variances, uncertain_vectors = _lanczos_smallest_modes(
+            cov_inv_tot[np.ix_(good, good)],
+            n_modes=N_UNCERTAIN_MODES,
+            oversample=LANCZOS_OVERSAMPLE,
+            maxiter=LANCZOS_MAXITER,
+            seed=LANCZOS_SEED,
+        )
     else:
         uncertain_vectors = np.empty((n_obs, 0), dtype=np.float64)
         uncertain_variances = np.empty((0,), dtype=np.float64)
+    if timings is not None:
+        timings["uncertain_modes_s"] = time.perf_counter() - t0
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
     _out = dict(
         estimator_mode=np.array("ML", dtype=object),
         bbox_ix0=np.int64(layout.bbox_ix0),
@@ -148,6 +258,8 @@ def run_synthesis(
         scan_metadata=np.array(scan_metadata, dtype=object),
     )
     np.savez_compressed(out_path, **_out)
+    if timings is not None:
+        timings["write_s"] = time.perf_counter() - t0
     print(f"[write] {out_path} n_obs={n_obs} n_scans_used={len(existing)}/{layout.n_scans}", flush=True)
 
 
@@ -206,9 +318,14 @@ def run_synthesis_multi_obs(
     Pt_Ninv_d_tot = np.zeros((n_obs,), dtype=np.float64)
     scan_metadata: list[dict] = []
 
-    t0 = time.perf_counter()
+    t_load = 0.0
+    t_accum = 0.0
     for obs_id, scan_index, npz_path in tqdm(artifact_paths, desc="load+accumulate", leave=True):
+        t0 = time.perf_counter()
         art = load_scan_artifact(npz_path)
+        t_load += time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         obs_pix_global_scan = art["obs_pix_global_scan"]
         cov_inv_s = art["cov_inv"]
         Pt_Ninv_d_s = art["Pt_Ninv_d"]
@@ -221,20 +338,26 @@ def run_synthesis_multi_obs(
             cov_inv_tot[np.ix_(obs_idx_valid, obs_idx_valid)] += cov_inv_s_valid
             Pt_Ninv_d_tot[obs_idx_valid] += Pt_Ninv_d_s_valid
         scan_metadata.append(_scan_meta_entry(obs_id, scan_index, art))
+        t_accum += time.perf_counter() - t0
     if timings is not None:
-        timings["load_s"] = time.perf_counter() - t0
+        timings["load_s"] = t_load
+        timings["accumulate_s"] = t_accum
 
-    zero_precision_mask = np.all(cov_inv_tot == 0.0, axis=1)
-    good = ~zero_precision_mask
+    precision_diag_total = np.diag(cov_inv_tot).copy()
+    good = precision_diag_total > 0.0
+    zero_precision_mask = ~good
     c_hat_obs = np.zeros((n_obs,), dtype=np.float64)
+    print(f"[solve] n_obs={n_obs} n_good={int(np.sum(good))}", flush=True)
+    t0 = time.perf_counter()
     if np.any(good):
         cov_inv_good = cov_inv_tot[np.ix_(good, good)]
         Pt_Ninv_d_good = Pt_Ninv_d_tot[good]
-        c_hat_good = _solve_synthesis_gpu(cov_inv_good, Pt_Ninv_d_good)
+        c_hat_good = _solve_synthesis(cov_inv_good, Pt_Ninv_d_good)
         c_hat_obs[good] = np.asarray(c_hat_good, dtype=np.float64)
         c_hat_obs -= float(np.mean(c_hat_obs[good]))
+    if timings is not None:
+        timings["solve_s"] = time.perf_counter() - t0
 
-    precision_diag_total = np.diag(cov_inv_tot).copy()
     var_diag_total = np.full((n_obs,), np.inf, dtype=np.float64)
     var_diag_total[good] = np.where(
         precision_diag_total[good] > 0.0,
@@ -245,18 +368,25 @@ def run_synthesis_multi_obs(
     c_hat_full_mk[combined_layout.obs_pix_global] = c_hat_obs
 
     n_good = int(np.sum(good))
+    t0 = time.perf_counter()
     if n_good > 0:
-        evals, evecs = np.linalg.eigh(cov_inv_tot[np.ix_(good, good)])
-        k = min(10, max(1, int(0.1 * n_good)))
-        uncertain_vectors = np.asarray(evecs[:, :k], dtype=np.float64)
-        uncertain_variances = np.asarray(1.0 / evals[:k], dtype=np.float64)
+        uncertain_variances, uncertain_vectors = _lanczos_smallest_modes(
+            cov_inv_tot[np.ix_(good, good)],
+            n_modes=N_UNCERTAIN_MODES,
+            oversample=LANCZOS_OVERSAMPLE,
+            maxiter=LANCZOS_MAXITER,
+            seed=LANCZOS_SEED,
+        )
     else:
         uncertain_vectors = np.empty((n_obs, 0), dtype=np.float64)
         uncertain_variances = np.empty((0,), dtype=np.float64)
+    if timings is not None:
+        timings["uncertain_modes_s"] = time.perf_counter() - t0
 
     out_dir = out_base / field_id / out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
     out_npz = out_dir / "recon_combined_ml.npz"
+    t0 = time.perf_counter()
     _out = dict(
         estimator_mode=np.array("ML", dtype=object),
         bbox_ix0=np.int64(combined_layout.bbox_ix0),
@@ -279,5 +409,7 @@ def run_synthesis_multi_obs(
         scan_metadata=np.array(scan_metadata, dtype=object),
     )
     np.savez_compressed(out_npz, **_out)
+    if timings is not None:
+        timings["write_s"] = time.perf_counter() - t0
     print(f"[write] {out_npz} n_obs={n_obs} n_scans={len(artifact_paths)}", flush=True)
     return combined_layout, out_npz
