@@ -1,10 +1,11 @@
 """
 Parallel solve: exact global synthesis from per-scan cov_inv and Pt_Ninv_d.
 
-Sum [Cov(hat c_s)]^{-1} and P^T tilde N^{-1} d at global observed indices; solve for hat c.
-We must form cov_inv_tot to save it; the solve (cov_inv_tot @ c_hat = RHS) is O(n_obs^3).
-Uncertain-mode diagnostics use a Lanczos low-rank eigensolve (smallest precision eigenvalues).
-The dense precision matrix cov_inv_tot (n_obs x n_obs) is always saved in the output NPZ.
+Joint synthesis (theory): cov_inv_tot = sum_s [Cov(hat c_s)]^{-1}, Pt_Ninv_d_tot = sum_s P_s' tilde N_s^{-1} d_s.
+Solve (cov_inv_tot @ c_hat = Pt_Ninv_d_tot) for ML map on observed pixels; gauge by mean subtraction.
+Unconstrained modes: eigenvectors of the precision [Cov(hat c)]^{-1} with smallest eigenvalues
+(largest posterior variance). Estimated via Lanczos on cov_inv_tot; stored as uncertain_mode_vectors (n_good, k)
+and uncertain_mode_variances = 1/lambda (covariance eigenvalues). The dense cov_inv_tot is always saved.
 """
 
 from __future__ import annotations
@@ -46,10 +47,11 @@ def _lanczos_smallest_modes(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Approximate smallest eigenpairs of SPD precision matrix via Lanczos + Ritz projection.
+    These are the pixel-space unconstrained directions (largest posterior variance).
 
     Returns:
       uncertain_variances: (k,) approximate covariance eigenvalues = 1 / lambda_min
-      uncertain_vectors: (n_good, k) corresponding approximate eigenvectors
+      uncertain_vectors: (n_good, k) eigenvectors on the good-pixel subspace
     """
     n = int(cov_inv_good.shape[0])
     if n == 0:
@@ -228,8 +230,11 @@ def run_synthesis(
             maxiter=LANCZOS_MAXITER,
             seed=LANCZOS_SEED,
         )
+        k = uncertain_vectors.shape[1]
+        full_uncertain = np.zeros((n_obs, k), dtype=np.float64)
+        full_uncertain[good] = uncertain_vectors
     else:
-        uncertain_vectors = np.empty((n_obs, 0), dtype=np.float64)
+        full_uncertain = np.empty((n_obs, 0), dtype=np.float64)
         uncertain_variances = np.empty((0,), dtype=np.float64)
     if timings is not None:
         timings["uncertain_modes_s"] = time.perf_counter() - t0
@@ -378,7 +383,7 @@ def run_synthesis_multi_obs(
             seed=LANCZOS_SEED,
         )
     else:
-        uncertain_vectors = np.empty((n_obs, 0), dtype=np.float64)
+        uncertain_vectors = np.empty((0, 0), dtype=np.float64)
         uncertain_variances = np.empty((0,), dtype=np.float64)
     if timings is not None:
         timings["uncertain_modes_s"] = time.perf_counter() - t0

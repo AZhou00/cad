@@ -15,7 +15,7 @@ Synthesis npz (recon_combined_ml.npz) structure:
   - obs_pix_global: (n_obs,) global pixel indices
   - cov_inv_tot: (n_obs, n_obs) global precision
   - good_mask: (n_obs,) bool
-  - uncertain_mode_vectors: (n_obs, k), uncertain_mode_variances: (k,)
+  - uncertain_mode_vectors: (n_good, k), uncertain_mode_variances: (k,)
   - scan_metadata: object array of length n_scans; each element is a dict with
     observation_id (str), scan_index (int), wind_deg_per_s (2,), wind_sigma_x_deg_per_s (float),
     wind_sigma_y_deg_per_s (float), ell_atm (n_ell,), cl_atm_mk2 (n_ell,)
@@ -24,7 +24,7 @@ Output plots (each function docstring lists I/O shapes):
   maps_naive_vs_combined_ml, power2d_naive_vs_combined_ml, cl_naive_vs_combined_ml,
   pixel_precision_synthesized_ml, cl_atm_distribution_ml, wind_scatter_ml,
   maps_single_scan_naive_vs_point_ml, pixel_precision_scan0_scan1_ml,
-  maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
+  uncertain_eigenvalues_ml, maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
 
 Usage:
   python plot_reconstruction.py <path_to_recon_combined_ml.npz>
@@ -402,19 +402,46 @@ def plot_synthesized_precision(out_path: pathlib.Path, cov_inv_tot: np.ndarray) 
     plt.close(fig)
 
 
-def _remove_uncertain_modes(
+def _deproject_uncertain_modes(
     vec_obs: np.ndarray,
     good_mask: np.ndarray,
     uncertain_vectors: np.ndarray,
 ) -> np.ndarray:
-    """Remove projection onto top uncertain modes. vec_obs (n_obs,), good (n_obs,), V (n_good, k). Returns filtered vec_obs."""
+    """Set amplitudes of unconstrained modes to zero (deproject). vec_obs (n_obs,), good (n_obs,), uncertain_vectors (n_good, k). Returns vec_obs with those modes zeroed."""
     out = np.asarray(vec_obs, dtype=np.float64).copy()
     good = np.asarray(good_mask, dtype=bool)
-    V = np.asarray(uncertain_vectors, dtype=np.float64)
+    V_good = np.asarray(uncertain_vectors, dtype=np.float64)
+    if V_good.size == 0:
+        return out
     vec_good = out[good]
-    vec_good -= (V @ (V.T @ vec_good))
+    vec_good -= V_good @ (V_good.T @ vec_good)
     out[good] = vec_good
     return out
+
+
+def plot_uncertain_eigenvalues(
+    out_path: pathlib.Path,
+    uncertain_variances: np.ndarray,
+) -> None:
+    """
+    Posterior variance (eigenvalues of Cov(c_hat)) for the top unconstrained modes.
+
+    uncertain_variances (k,) = 1 / lambda_min from precision; mode index 0 = most uncertain.
+    I/O: uncertain_variances (k,). Output: PNG to out_path.
+    """
+    if uncertain_variances.size == 0:
+        return
+    v = np.asarray(uncertain_variances, dtype=np.float64)
+    fig, ax = plt.subplots(1, 1, figsize=(6.0, 3.5), dpi=150)
+    ax.plot(np.arange(v.size), v, "o-", ms=2, lw=0.8, color="C0")
+    ax.set_xlabel("mode index (most uncertain first)")
+    ax.set_ylabel(r"posterior variance [mK$^2$]")
+    ax.set_yscale("log")
+    ax.grid(True, which="both", alpha=0.2)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_eigenmode_removed_maps(
@@ -430,11 +457,11 @@ def plot_eigenmode_removed_maps(
     hit_mask: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Maps after removing projection onto top ~10% uncertain eigenmodes of the synthesized precision.
+    Maps after deprojecting top unconstrained eigenmodes (set their amplitudes to zero).
 
-    Uncertain modes = eigenvectors of [Cov(c_hat)]^{-1} with smallest eigenvalues (k ~ 0.1*n_good).
-    Removes the most prior-dominated or degenerate directions; residual map highlights
-    well-constrained modes. Returns (coadd_2d_filtered, rec_2d_filtered) for CL plot.
+    Unconstrained modes = eigenvectors of precision [Cov(c_hat)]^{-1} with smallest eigenvalues.
+    Deprojecting zeros those mode amplitudes; C_ell and maps show only well-constrained modes.
+    Returns (coadd_2d_filtered, rec_2d_filtered) for CL plot.
 
     I/O: naive_2d (ny, nx), c_hat_obs (n_obs,), obs_pix_global (n_obs,), good_mask (n_obs,),
     uncertain_vectors (n_obs, k), nx/ny scalars, extent [4], hit_mask (ny, nx). Output: PNG to out_path;
@@ -445,8 +472,8 @@ def plot_eigenmode_removed_maps(
     naive_vec = np.where(np.isfinite(naive_vec), naive_vec, 0.0)
     naive_vec = naive_vec.T.ravel()
     coadd_obs = np.asarray(naive_vec[obs_pix_global], dtype=np.float64)
-    coadd_filt = _remove_uncertain_modes(coadd_obs, good_mask, uncertain_vectors)
-    rec_filt = _remove_uncertain_modes(c_hat_obs, good_mask, uncertain_vectors)
+    coadd_filt = _deproject_uncertain_modes(coadd_obs, good_mask, uncertain_vectors)
+    rec_filt = _deproject_uncertain_modes(c_hat_obs, good_mask, uncertain_vectors)
     coadd_full = np.full(n_pix, np.nan, dtype=np.float64)
     rec_full = np.full(n_pix, np.nan, dtype=np.float64)
     coadd_full[obs_pix_global] = coadd_filt
@@ -457,8 +484,8 @@ def plot_eigenmode_removed_maps(
     rec_masked = np.where(hit_mask & np.isfinite(rec_2d_filt), rec_2d_filt, np.nan).astype(np.float32)
     coadd_masked = np.where(hit_mask & np.isfinite(coadd_2d), coadd_2d, np.nan).astype(np.float32)
     fig, axs = plt.subplots(2, 1, figsize=(9.0, 4.6), dpi=150, sharex=True, sharey=True)
-    _imshow(axs[0], coadd_masked, extent=extent, title="Coadd (top 10% uncertain modes removed) [mK]", vmin=vmin, vmax=vmax)
-    im = _imshow(axs[1], rec_masked, extent=extent, title="Synthesized (top 10% uncertain modes removed) [mK]", vmin=vmin, vmax=vmax)
+    _imshow(axs[0], coadd_masked, extent=extent, title="Coadd (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
+    im = _imshow(axs[1], rec_masked, extent=extent, title="Synthesized (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
     fig.subplots_adjust(right=0.86, hspace=0.25)
     pos = axs[-1].get_position()
     cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
@@ -477,10 +504,9 @@ def plot_eigenmode_removed_cl(
     hit_mask: np.ndarray,
 ) -> None:
     """
-    1D C_ell of the eigenmode-removed maps (naive and synthesized).
+    1D C_ell of maps with unconstrained modes set to zero (naive and synthesized).
 
-    Same as cl_naive_vs_combined but for maps with top uncertain modes projected out;
-    compares how much power lives in those modes for coadd vs recon.
+    Same as cl_naive_vs_combined but for deprojected maps; compares residual power.
 
     I/O: coadd_2d_filtered, rec_2d_filtered (ny, nx), pixel_res_rad scalar, hit_mask (ny, nx). Output: PNG to out_path.
     """
@@ -491,8 +517,8 @@ def plot_eigenmode_removed_cl(
         map_2d_mk=rec_2d_filtered, pixel_res_rad=pixel_res_rad, hit_mask=hit_mask, n_ell_bins=N_ELL_BINS
     )
     fig, ax = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
-    ax.plot(ell, cl_coadd, color="k", lw=2.0, label="coadd (modes removed)")
-    ax.plot(ell, cl_rec, color="C3", lw=2.5, label="synthesized (modes removed)")
+    ax.plot(ell, cl_coadd, color="k", lw=2.0, label="coadd (unconstrained modes = 0)")
+    ax.plot(ell, cl_rec, color="C3", lw=2.5, label="synthesized (unconstrained modes = 0)")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel(r"$\ell$")
@@ -549,29 +575,33 @@ def plot_wind_scatter(
     scan_metadata: list[dict],
 ) -> None:
     """
-    Wind velocity (wx, wy) deg/s per scan with error bars from wind uncertainty.
+    Wind velocity (wx, wy) deg/s per scan with error bars; one color per observation_id.
 
     Scatter (wx, wy); xerr = wind_sigma_x_deg_per_s, yerr = wind_sigma_y_deg_per_s.
-    Shows diversity of wind directions across scans and per-scan fit uncertainty.
+    Smaller markers; color by observation_id.
 
-    I/O: scan_metadata list of dicts (each: wind_deg_per_s (2,), wind_sigma_x_deg_per_s, wind_sigma_y_deg_per_s scalars).
+    I/O: scan_metadata list of dicts (each: observation_id, wind_deg_per_s (2,), wind_sigma_* scalars).
     Output: PNG to out_path.
     """
     if not scan_metadata:
         return
-    wx = np.array([float(m["wind_deg_per_s"][0]) for m in scan_metadata])
-    wy = np.array([float(m["wind_deg_per_s"][1]) for m in scan_metadata])
-    sx = np.array([float(m["wind_sigma_x_deg_per_s"]) for m in scan_metadata])
-    sy = np.array([float(m["wind_sigma_y_deg_per_s"]) for m in scan_metadata])
+    obs_ids = list(dict.fromkeys(m["observation_id"] for m in scan_metadata))
+    color_map = {oid: f"C{i % 10}" for i, oid in enumerate(obs_ids)}
     fig, ax = plt.subplots(1, 1, figsize=(6.0, 5.0), dpi=150)
-    ax.errorbar(wx, wy, xerr=sx, yerr=sy, fmt="o", capsize=2, capthick=1, label="per scan")
+    for obs_id in obs_ids:
+        subset = [m for m in scan_metadata if m["observation_id"] == obs_id]
+        wx = np.array([float(m["wind_deg_per_s"][0]) for m in subset])
+        wy = np.array([float(m["wind_deg_per_s"][1]) for m in subset])
+        sx = np.array([float(m["wind_sigma_x_deg_per_s"]) for m in subset])
+        sy = np.array([float(m["wind_sigma_y_deg_per_s"]) for m in subset])
+        ax.errorbar(wx, wy, xerr=sx, yerr=sy, fmt="o", ms=3, capsize=1.5, capthick=0.8, color=color_map[obs_id], label=str(obs_id))
     ax.axhline(0, color="k", lw=0.5)
     ax.axvline(0, color="k", lw=0.5)
     ax.set_xlabel(r"wind $v_x$ [deg/s]")
     ax.set_ylabel(r"wind $v_y$ [deg/s]")
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.2)
-    ax.legend(fontsize=8, loc="best")
+    ax.legend(fontsize=7, loc="best", ncol=2 if len(obs_ids) > 5 else 1)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
@@ -583,7 +613,7 @@ def main(synthesis_npz: pathlib.Path) -> None:
     Load synthesis npz, optional scan npzs and binned TOD; write all plots.
 
     Reads from synthesis_npz: bbox_*, nx, ny, pixel_size_deg, c_hat_full_mk (n_pix,), c_hat_obs (n_obs,),
-    obs_pix_global (n_obs,), cov_inv_tot (n_obs, n_obs), good_mask (n_obs,), uncertain_mode_vectors (n_obs, k),
+    obs_pix_global (n_obs,), cov_inv_tot (n_obs, n_obs), good_mask (n_obs,), uncertain_mode_vectors (n_good, k),
     scan_metadata (list of dicts). out_dir = synthesis_npz.parent; field_id = synthesis_npz.parent.parent.name.
     Observation ids for binned TOD from scan_metadata; scan_dir = out_dir/scans if present. Writes to out_dir/plots/.
     """
@@ -608,6 +638,7 @@ def main(synthesis_npz: pathlib.Path) -> None:
         cov_inv_tot = np.asarray(rc["cov_inv_tot"], dtype=np.float64)
         good_mask = np.asarray(rc["good_mask"], dtype=bool)
         uncertain_vectors = np.asarray(rc["uncertain_mode_vectors"], dtype=np.float64)
+        uncertain_variances = np.asarray(rc["uncertain_mode_variances"], dtype=np.float64) if "uncertain_mode_variances" in rc else np.empty((0,), dtype=np.float64)
         scan_metadata = rc["scan_metadata"].tolist() if "scan_metadata" in rc else []
 
     obs_ids_from_meta = list(dict.fromkeys(m["observation_id"] for m in scan_metadata))
@@ -670,6 +701,8 @@ def main(synthesis_npz: pathlib.Path) -> None:
                 wind_1=wind_1,
             )
 
+    if uncertain_variances.size > 0:
+        plot_uncertain_eigenvalues(plots_dir / "uncertain_eigenvalues_ml.png", uncertain_variances)
     if uncertain_vectors.shape[1] > 0 and np.any(tod_paths):
         coadd_2d_f, rec_2d_f = plot_eigenmode_removed_maps(
             plots_dir / "maps_eigenmode_removed_ml.png",

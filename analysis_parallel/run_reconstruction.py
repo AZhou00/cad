@@ -36,7 +36,7 @@ N_GPUS = 4
 
 # Default data; argv can override
 FIELD_ID = "ra0hdec-59.75"
-OBSERVATION_ID = "101724132"
+OBSERVATION_ID = "101931619"
 
 # run_one_scan kwargs (optional)
 N_ELL_BINS = 128

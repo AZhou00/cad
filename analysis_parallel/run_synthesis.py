@@ -46,7 +46,7 @@ if str(CAD_DIR / "src") not in sys.path:
 from cad.parallel_solve import load_layout, run_synthesis, run_synthesis_multi_obs
 
 FIELD_ID = "ra0hdec-59.75"
-OBSERVATION_IDS = ["101715260"]
+OBSERVATION_IDS = ["101706388", "101715260", "101724132"]
 OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 
 
