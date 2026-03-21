@@ -190,7 +190,15 @@ def main() -> None:
         timings_synth: list[dict[str, float]] = []
         for _ in range(N_REP):
             td: dict[str, float] = {}
-            run_synthesis(layout_synth, RECONSTRUCTED_DIR, out_npz, timings=td)
+            run_synthesis(
+                layout_synth,
+                RECONSTRUCTED_DIR,
+                out_npz,
+                n_uncertain_modes=256,
+                lanczos_oversample=32,
+                lanczos_maxiter=512,
+                timings=td,
+            )
             timings_synth.append(td)
         t_synth = float(np.mean([sum(td.values()) for td in timings_synth]))
         t_load_s = float(np.mean([td["load_s"] for td in timings_synth]))

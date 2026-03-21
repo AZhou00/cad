@@ -1,35 +1,20 @@
 #!/usr/bin/env python3
 """
-Exact global synthesis from per-scan cov_inv and Pt_Ninv_d. Thin CLI around parallel_solve.
+Exact global synthesis on an inner footprint (10% margin removed on each side).
 
-Accumulates cov_inv_tot and Pt_Ninv_d_tot from per-scan npzs, solves cov_inv_tot @ c_hat = Pt_Ninv_d_tot,
-embeds to full CMB grid, writes combined map and scan_metadata. Run after run_reconstruction.py.
+Same accumulation/solve as run_synthesis.py, but all computations are performed on a reduced
+bbox where edge pixels are dropped from every scan before summation:
+  - map solve
+  - precision/covariance diagnostics
+  - uncertain eigenmodes
+
+Output schema is identical to recon_combined_ml.npz so plot_reconstruction.py can read it directly.
 
 CLI
 ---
-  python run_synthesis.py [observation_ids]
+  python run_synthesis_margined.py [observation_ids]
 
   observation_ids: optional, comma-separated list (no spaces). If omitted, uses OBSERVATION_IDS below.
-  Examples:
-    python run_synthesis.py
-    python run_synthesis.py 101706388
-    python run_synthesis.py 101706388,101715260
-
-Input (per observation)
------------------------
-  OUT_BASE / FIELD_ID / <obs_id> / layout.npz
-  OUT_BASE / FIELD_ID / <obs_id> / scans / scan_0000_ml.npz, scan_0001_ml.npz, ...
-
-Output tree
------------
-  Single observation (one obs_id):
-    OUT_BASE / FIELD_ID / <obs_id> / recon_combined_ml_full.npz
-
-  Multiple observations (comma-separated obs_ids):
-    OUT_BASE / FIELD_ID / synthesized / recon_combined_ml_full.npz
-
-  Both paths write a single npz with the same structure (c_hat_*, cov_inv_tot, scan_metadata, etc.).
-  scan_metadata is a list of per-scan dicts (observation_id, scan_index, wind_deg_per_s, wind_sigma_*, ell_atm, cl_atm_mk2).
 """
 
 from __future__ import annotations
@@ -49,11 +34,11 @@ FIELD_ID = "ra0hdec-59.75"
 OBSERVATION_IDS = ["101706388", "101715260", "101724132", "101931619"]
 OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 OUT_SUBDIR_MULTI = "synthesized"
-OUT_FILENAME = "recon_combined_ml_full.npz"
-MARGIN_FRAC = 0.0
-N_UNCERTAIN_MODES = 4096
-LANCZOS_OVERSAMPLE = 256
-LANCZOS_MAXITER = 8192
+OUT_FILENAME = "recon_combined_ml_margined.npz"
+MARGIN_FRAC = 0.10
+N_UNCERTAIN_MODES = 1024
+LANCZOS_OVERSAMPLE = 128
+LANCZOS_MAXITER = 2048
 # Heuristic for fixed k eigenmodes:
 #   1) choose n_uncertain_modes = k,
 #   2) choose lanczos_maxiter >= 2*k (otherwise Ritz space is truncated),

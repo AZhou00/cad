@@ -107,7 +107,14 @@ def test_synthesis_two_scans_minimal():
                 ell_atm=np.linspace(10.0, 500.0, n_ell, dtype=np.float64),
                 cl_atm_mk2=np.ones((n_ell,), dtype=np.float64) * 1e-6,
             )
-        run_synthesis(layout, scan_dir, out_path)
+        run_synthesis(
+            layout,
+            scan_dir,
+            out_path,
+            n_uncertain_modes=8,
+            lanczos_oversample=4,
+            lanczos_maxiter=16,
+        )
         with np.load(out_path, allow_pickle=True) as z:
             c_hat_obs = np.asarray(z["c_hat_obs"], dtype=np.float64)
             c_hat_full_mk = np.asarray(z["c_hat_full_mk"], dtype=np.float64)

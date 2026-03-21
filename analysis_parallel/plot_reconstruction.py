@@ -2,13 +2,13 @@
 """
 Plot combined and per-scan reconstructions (parallel path output).
 
-Input: path to synthesis npz (recon_combined_ml.npz). Path is normally under OUT_BASE, e.g.
-  OUT_BASE/field_id/observation_id/recon_combined_ml.npz or OUT_BASE/field_id/synthesized/recon_combined_ml.npz.
+Input: path to synthesis npz (recon_combined_ml_full.npz or recon_combined_ml_margined.npz). Path is normally under OUT_BASE, e.g.
+  OUT_BASE/field_id/observation_id/recon_combined_ml_full.npz or OUT_BASE/field_id/synthesized/recon_combined_ml_margined.npz.
   field_id is inferred as path.parent.parent.name for binned TOD lookup (DATA_DIR/field_id/<obs_id>/).
   Optional: out_dir/scans/scan_*_ml.npz for per-scan map/precision plots; binned TOD from scan_metadata obs ids.
-Output: out_dir/plots/ with out_dir = path.parent.
+Output: out_dir/<plots_subdir>/ with out_dir = path.parent.
 
-Synthesis npz (recon_combined_ml.npz) structure:
+Synthesis npz (recon_combined_ml_full.npz / recon_combined_ml_margined.npz) structure:
   - bbox_ix0, bbox_iy0, nx, ny, pixel_size_deg: scalars
   - c_hat_full_mk: (n_pix,) ML map on full CMB grid [mK]
   - c_hat_obs: (n_obs,) ML map on observed pixels
@@ -27,8 +27,8 @@ Output plots (each function docstring lists I/O shapes):
   uncertain_eigenvalues_ml, uncertain_eigenmode_maps_ml, maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
 
 Usage:
-  python plot_reconstruction.py <path_to_recon_combined_ml.npz>
-  Path should be under OUT_BASE (e.g. .../field_id/observation_id/recon_combined_ml.npz). Observation ids
+  python plot_reconstruction.py <path_to_recon_combined_ml_*.npz>
+  Path should be under OUT_BASE (e.g. .../field_id/observation_id/recon_combined_ml_full.npz). Observation ids
   for binned TOD are read from scan_metadata; per-scan plots use out_dir/scans/ when that dir exists.
 """
 
@@ -54,7 +54,20 @@ from cad import map as map_util
 from cad import power
 from cad.parallel_solve.reconstruct_scan import load_scan_artifact
 
-DEFAULT_SYNTHESIS_NPZ = OUT_BASE / "ra0hdec-59.75" / "101706388" / "recon_combined_ml.npz"
+# Toggle which synthesis output to plot by default (when no CLI path is given).
+# - "full": uses recon_combined_ml_full.npz and writes plots_full/
+# - "margined": uses recon_combined_ml_margined.npz and writes plots_margined/
+PLOT_DATA_VARIANT = "full"
+if PLOT_DATA_VARIANT == "full":
+    DEFAULT_SYNTHESIS_FILENAME = "recon_combined_ml_full.npz"
+    DEFAULT_PLOTS_SUBDIR = "plots_full"
+elif PLOT_DATA_VARIANT == "margined":
+    DEFAULT_SYNTHESIS_FILENAME = "recon_combined_ml_margined.npz"
+    DEFAULT_PLOTS_SUBDIR = "plots_margined"
+else:
+    raise ValueError(f"Unsupported PLOT_DATA_VARIANT={PLOT_DATA_VARIANT}")
+
+DEFAULT_SYNTHESIS_NPZ = OUT_BASE / "ra0hdec-59.75" / "synthesized" / DEFAULT_SYNTHESIS_FILENAME
 N_ELL_BINS = 128
 BINNED_TOD_SUBDIR = "binned_tod_10arcmin"
 TOP_N_SCANS = 5
@@ -663,14 +676,15 @@ def plot_wind_scatter(
     plt.close(fig)
 
 
-def main(synthesis_npz: pathlib.Path) -> None:
+def main(synthesis_npz: pathlib.Path, plots_subdir: str = DEFAULT_PLOTS_SUBDIR) -> None:
     """
     Load synthesis npz, optional scan npzs and binned TOD; write all plots.
 
     Reads from synthesis_npz: bbox_*, nx, ny, pixel_size_deg, c_hat_full_mk (n_pix,), c_hat_obs (n_obs,),
     obs_pix_global (n_obs,), cov_inv_tot (n_obs, n_obs), good_mask (n_obs,), uncertain_mode_vectors (n_good, k),
     scan_metadata (list of dicts). out_dir = synthesis_npz.parent; field_id = synthesis_npz.parent.parent.name.
-    Observation ids for binned TOD from scan_metadata; scan_dir = out_dir/scans if present. Writes to out_dir/plots/.
+    Observation ids for binned TOD from scan_metadata; scan_dir = out_dir/scans if present.
+    Writes to out_dir/<plots_subdir>/ (e.g., plots_full or plots_margined).
     """
     combined_npz = pathlib.Path(synthesis_npz).resolve()
     if not combined_npz.exists():
@@ -680,7 +694,7 @@ def main(synthesis_npz: pathlib.Path) -> None:
     scan_dir = out_dir / "scans"
     scan_dir = scan_dir if scan_dir.is_dir() else None
 
-    plots_dir = out_dir / "plots"
+    plots_dir = out_dir / plots_subdir
     with np.load(combined_npz, allow_pickle=True) as rc:
         bbox_ix0 = int(rc["bbox_ix0"])
         bbox_iy0 = int(rc["bbox_iy0"])
@@ -795,4 +809,4 @@ def main(synthesis_npz: pathlib.Path) -> None:
 
 if __name__ == "__main__":
     synthesis_npz = pathlib.Path(sys.argv[1]) if len(sys.argv) >= 2 else DEFAULT_SYNTHESIS_NPZ
-    main(synthesis_npz=synthesis_npz)
+    main(synthesis_npz=synthesis_npz, plots_subdir=DEFAULT_PLOTS_SUBDIR)

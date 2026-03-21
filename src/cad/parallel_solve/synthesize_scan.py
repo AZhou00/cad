@@ -23,9 +23,6 @@ from .reconstruct_scan import load_scan_artifact
 
 jax.config.update("jax_enable_x64", True)
 
-N_UNCERTAIN_MODES = 4096
-LANCZOS_OVERSAMPLE = 256
-LANCZOS_MAXITER = 8192
 LANCZOS_SEED = 0
 
 
@@ -40,9 +37,9 @@ def _solve_synthesis(cov_inv_good: np.ndarray, Pt_Ninv_d_good: np.ndarray) -> np
 def _lanczos_smallest_modes(
     cov_inv_good: np.ndarray,
     *,
-    n_modes: int = N_UNCERTAIN_MODES,
-    oversample: int = LANCZOS_OVERSAMPLE,
-    maxiter: int = LANCZOS_MAXITER,
+    n_modes: int,
+    oversample: int,
+    maxiter: int,
     seed: int = LANCZOS_SEED,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -144,20 +141,102 @@ def _scan_meta_entry(
     }
 
 
+def _trim_sides(n: int, margin_frac: float) -> int:
+    return int(np.floor(float(n) * float(margin_frac)))
+
+
+def _margined_bbox(
+    *,
+    bbox_ix0: int,
+    bbox_iy0: int,
+    nx: int,
+    ny: int,
+    margin_frac: float,
+) -> tuple[int, int, int, int, int, int]:
+    mx = _trim_sides(nx, margin_frac)
+    my = _trim_sides(ny, margin_frac)
+    nx_inner = int(nx - 2 * mx)
+    ny_inner = int(ny - 2 * my)
+    if nx_inner <= 0 or ny_inner <= 0:
+        raise ValueError(f"margin_frac={margin_frac} too large for nx={nx}, ny={ny}")
+    return int(bbox_ix0 + mx), int(bbox_iy0 + my), nx_inner, ny_inner, mx, my
+
+
+def _remap_pixels_to_inner_bbox(
+    pix_old: np.ndarray,
+    *,
+    nx_old: int,
+    ny_old: int,
+    mx: int,
+    my: int,
+    ny_inner: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    pix = np.asarray(pix_old, dtype=np.int64)
+    ix_old = pix // int(ny_old)
+    iy_old = pix - ix_old * int(ny_old)
+    keep = (
+        (ix_old >= int(mx))
+        & (ix_old < int(nx_old - mx))
+        & (iy_old >= int(my))
+        & (iy_old < int(ny_old - my))
+    )
+    if not np.any(keep):
+        return np.empty((0,), dtype=np.int64), keep
+    ix_new = ix_old[keep] - int(mx)
+    iy_new = iy_old[keep] - int(my)
+    pix_new = iy_new + ix_new * int(ny_inner)
+    return np.asarray(pix_new, dtype=np.int64), keep
+
+
+def _margined_obs_index(
+    layout: GlobalLayout,
+    *,
+    margin_frac: float,
+) -> tuple[int, int, int, int, int, int, np.ndarray, np.ndarray]:
+    bbox_ix0, bbox_iy0, nx, ny, mx, my = _margined_bbox(
+        bbox_ix0=layout.bbox_ix0,
+        bbox_iy0=layout.bbox_iy0,
+        nx=layout.nx,
+        ny=layout.ny,
+        margin_frac=margin_frac,
+    )
+    obs_pix_global, _ = _remap_pixels_to_inner_bbox(
+        layout.obs_pix_global,
+        nx_old=layout.nx,
+        ny_old=layout.ny,
+        mx=mx,
+        my=my,
+        ny_inner=ny,
+    )
+    n_pix = int(nx * ny)
+    global_to_obs = np.full((n_pix,), -1, dtype=np.int64)
+    if obs_pix_global.size > 0:
+        global_to_obs[obs_pix_global] = np.arange(obs_pix_global.size, dtype=np.int64)
+    return bbox_ix0, bbox_iy0, nx, ny, mx, my, obs_pix_global, global_to_obs
+
+
 def run_synthesis(
     layout: GlobalLayout,
     scan_npz_dir: Path,
     out_path: Path,
+    n_uncertain_modes: int,
+    lanczos_oversample: int,
+    lanczos_maxiter: int,
     observation_id: str = "",
     timings: dict | None = None,
+    margin_frac: float = 0.0,
 ) -> None:
     """
     Exact marginalized synthesis: accumulate cov_inv_tot and Pt_Ninv_d_tot from per-scan npzs,
     solve cov_inv_tot @ c_hat_obs = Pt_Ninv_d_tot, embed to full CMB grid.
     Writes one npz with same structure as run_synthesis_multi_obs. observation_id labels the scans (e.g. single-obs id).
     """
-    n_obs = layout.n_obs
-    global_to_obs = layout.global_to_obs
+    bbox_ix0, bbox_iy0, nx, ny, mx, my, obs_pix_global, global_to_obs = _margined_obs_index(
+        layout,
+        margin_frac=margin_frac,
+    )
+    n_obs = int(obs_pix_global.size)
+    n_pix = int(nx * ny)
     cov_inv_tot = np.zeros((n_obs, n_obs), dtype=np.float64)
     Pt_Ninv_d_tot = np.zeros((n_obs,), dtype=np.float64)
 
@@ -175,10 +254,23 @@ def run_synthesis(
         t_load += time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        obs_pix_global_scan = art["obs_pix_global_scan"]
+        obs_pix_global_scan_inner, keep = _remap_pixels_to_inner_bbox(
+            art["obs_pix_global_scan"],
+            nx_old=layout.nx,
+            ny_old=layout.ny,
+            mx=mx,
+            my=my,
+            ny_inner=ny,
+        )
         cov_inv_s = art["cov_inv"]
         Pt_Ninv_d_s = art["Pt_Ninv_d"]
-        obs_idx = np.asarray(global_to_obs[obs_pix_global_scan], dtype=np.int64)
+        if not np.any(keep):
+            scan_metadata.append(_scan_meta_entry(observation_id, scan_index, art))
+            t_accum += time.perf_counter() - t0
+            continue
+        cov_inv_s = cov_inv_s[np.ix_(keep, keep)]
+        Pt_Ninv_d_s = Pt_Ninv_d_s[keep]
+        obs_idx = np.asarray(global_to_obs[obs_pix_global_scan_inner], dtype=np.int64)
         valid = obs_idx >= 0
         obs_idx_valid = obs_idx[valid]
         if obs_idx_valid.size > 0:
@@ -216,25 +308,21 @@ def run_synthesis(
         np.inf,
     )
 
-    n_pix = layout.n_pix
     c_hat_full_mk = np.zeros((n_pix,), dtype=np.float64)
-    c_hat_full_mk[layout.obs_pix_global] = c_hat_obs  # (n_pix_cmb,)
+    c_hat_full_mk[obs_pix_global] = c_hat_obs
 
     n_good = int(np.sum(good))
     t0 = time.perf_counter()
     if n_good > 0:
         uncertain_variances, uncertain_vectors = _lanczos_smallest_modes(
             cov_inv_tot[np.ix_(good, good)],
-            n_modes=N_UNCERTAIN_MODES,
-            oversample=LANCZOS_OVERSAMPLE,
-            maxiter=LANCZOS_MAXITER,
+            n_modes=n_uncertain_modes,
+            oversample=lanczos_oversample,
+            maxiter=lanczos_maxiter,
             seed=LANCZOS_SEED,
         )
-        k = uncertain_vectors.shape[1]
-        full_uncertain = np.zeros((n_obs, k), dtype=np.float64)
-        full_uncertain[good] = uncertain_vectors
     else:
-        full_uncertain = np.empty((n_obs, 0), dtype=np.float64)
+        uncertain_vectors = np.empty((0, 0), dtype=np.float64)
         uncertain_variances = np.empty((0,), dtype=np.float64)
     if timings is not None:
         timings["uncertain_modes_s"] = time.perf_counter() - t0
@@ -243,12 +331,12 @@ def run_synthesis(
     t0 = time.perf_counter()
     _out = dict(
         estimator_mode=np.array("ML", dtype=object),
-        bbox_ix0=np.int64(layout.bbox_ix0),
-        bbox_iy0=np.int64(layout.bbox_iy0),
-        nx=np.int64(layout.nx),
-        ny=np.int64(layout.ny),
+        bbox_ix0=np.int64(bbox_ix0),
+        bbox_iy0=np.int64(bbox_iy0),
+        nx=np.int64(nx),
+        ny=np.int64(ny),
         pixel_size_deg=np.float64(layout.pixel_size_deg),
-        obs_pix_global=layout.obs_pix_global,
+        obs_pix_global=obs_pix_global,
         c_hat_full_mk=c_hat_full_mk,
         c_hat_obs=c_hat_obs,
         precision_diag_total=precision_diag_total,
@@ -272,8 +360,13 @@ def run_synthesis_multi_obs(
     out_base: Path,
     field_id: str,
     observation_ids: list[str],
+    n_uncertain_modes: int,
+    lanczos_oversample: int,
+    lanczos_maxiter: int,
     out_subdir: str = "synthesized",
+    out_filename: str = "recon_combined_ml.npz",
     timings: dict | None = None,
+    margin_frac: float = 0.0,
 ) -> tuple[GlobalLayout, Path]:
     """
     Load all scan npzs from OUT_BASE/field_id/obs_id/scans/ for each obs_id, build combined layout,
@@ -300,19 +393,38 @@ def run_synthesis_multi_obs(
     if not artifact_paths:
         raise FileNotFoundError(f"No scan_*_ml.npz found under {out_base / field_id} for {observation_ids}")
 
+    # Preserve original trajectory: build one combined/global layout first.
     first = layouts[0][1]
     obs_pix_union = sorted(set().union(*(set(lay.obs_pix_global.tolist()) for _, lay in layouts)))
-    n_obs = len(obs_pix_union)
-    n_pix = first.n_pix
-    global_to_obs = np.full(n_pix, -1, dtype=np.int64)
+    n_pix_full = first.n_pix
+    global_to_obs_full = np.full(n_pix_full, -1, dtype=np.int64)
     for i, p in enumerate(obs_pix_union):
-        global_to_obs[p] = i
-    combined_layout = GlobalLayout(
+        global_to_obs_full[p] = i
+    combined_layout_full = GlobalLayout(
         bbox_ix0=first.bbox_ix0,
         bbox_iy0=first.bbox_iy0,
         nx=first.nx,
         ny=first.ny,
         obs_pix_global=np.array(obs_pix_union, dtype=np.int64),
+        global_to_obs=global_to_obs_full,
+        scan_paths=(),
+        pixel_size_deg=first.pixel_size_deg,
+        field_id=field_id,
+    )
+
+    # Then apply one global margin in that combined coordinate system.
+    bbox_ix0, bbox_iy0, nx, ny, mx, my, obs_pix_global, global_to_obs = _margined_obs_index(
+        combined_layout_full,
+        margin_frac=margin_frac,
+    )
+    n_obs = int(obs_pix_global.size)
+    n_pix = int(nx * ny)
+    combined_layout = GlobalLayout(
+        bbox_ix0=bbox_ix0,
+        bbox_iy0=bbox_iy0,
+        nx=nx,
+        ny=ny,
+        obs_pix_global=obs_pix_global,
         global_to_obs=global_to_obs,
         scan_paths=(),
         pixel_size_deg=first.pixel_size_deg,
@@ -331,10 +443,23 @@ def run_synthesis_multi_obs(
         t_load += time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        obs_pix_global_scan = art["obs_pix_global_scan"]
+        obs_pix_global_scan_inner, keep = _remap_pixels_to_inner_bbox(
+            art["obs_pix_global_scan"],
+            nx_old=combined_layout_full.nx,
+            ny_old=combined_layout_full.ny,
+            mx=mx,
+            my=my,
+            ny_inner=combined_layout.ny,
+        )
         cov_inv_s = art["cov_inv"]
         Pt_Ninv_d_s = art["Pt_Ninv_d"]
-        obs_idx = np.asarray(combined_layout.global_to_obs[obs_pix_global_scan], dtype=np.int64)
+        if not np.any(keep):
+            scan_metadata.append(_scan_meta_entry(obs_id, scan_index, art))
+            t_accum += time.perf_counter() - t0
+            continue
+        cov_inv_s = cov_inv_s[np.ix_(keep, keep)]
+        Pt_Ninv_d_s = Pt_Ninv_d_s[keep]
+        obs_idx = np.asarray(combined_layout.global_to_obs[obs_pix_global_scan_inner], dtype=np.int64)
         valid = obs_idx >= 0
         obs_idx_valid = obs_idx[valid]
         if obs_idx_valid.size > 0:
@@ -377,9 +502,9 @@ def run_synthesis_multi_obs(
     if n_good > 0:
         uncertain_variances, uncertain_vectors = _lanczos_smallest_modes(
             cov_inv_tot[np.ix_(good, good)],
-            n_modes=N_UNCERTAIN_MODES,
-            oversample=LANCZOS_OVERSAMPLE,
-            maxiter=LANCZOS_MAXITER,
+            n_modes=n_uncertain_modes,
+            oversample=lanczos_oversample,
+            maxiter=lanczos_maxiter,
             seed=LANCZOS_SEED,
         )
     else:
@@ -390,7 +515,7 @@ def run_synthesis_multi_obs(
 
     out_dir = out_base / field_id / out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_npz = out_dir / "recon_combined_ml.npz"
+    out_npz = out_dir / out_filename
     t0 = time.perf_counter()
     _out = dict(
         estimator_mode=np.array("ML", dtype=object),
