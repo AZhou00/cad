@@ -24,7 +24,7 @@ Output plots (each function docstring lists I/O shapes):
   maps_naive_vs_combined_ml, power2d_naive_vs_combined_ml, cl_naive_vs_combined_ml,
   pixel_precision_synthesized_ml, cl_atm_distribution_ml, wind_scatter_ml,
   maps_single_scan_naive_vs_point_ml, pixel_precision_scan0_scan1_ml,
-  uncertain_eigenvalues_ml, maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
+  uncertain_eigenvalues_ml, uncertain_eigenmode_maps_ml, maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
 
 Usage:
   python plot_reconstruction.py <path_to_recon_combined_ml.npz>
@@ -419,6 +419,61 @@ def _deproject_uncertain_modes(
     return out
 
 
+def plot_uncertain_eigenmode_maps(
+    out_path: pathlib.Path,
+    uncertain_vectors: np.ndarray,
+    good_mask: np.ndarray,
+    obs_pix_global: np.ndarray,
+    nx: int,
+    ny: int,
+    extent: list[float],
+    n_show: int = 5,
+) -> None:
+    """
+    First n_show unconstrained eigenmodes as maps on the observed footprint.
+
+    uncertain_vectors (n_good, k), good_mask (n_obs,), obs_pix_global (n_obs,). Each column is
+    expanded to full obs space then placed on the CMB pixel grid; unobserved pixels stay nan.
+    Output: PNG to out_path.
+    """
+    V = np.asarray(uncertain_vectors, dtype=np.float64)
+    good = np.asarray(good_mask, dtype=bool)
+    n_obs = good.size
+    n_pix = nx * ny
+    k_show = min(int(n_show), V.shape[1])
+    if k_show <= 0:
+        return
+    maps_2d = []
+    for i in range(k_show):
+        vec_obs = np.full(n_obs, np.nan, dtype=np.float64)
+        vec_obs[good] = V[:, i]
+        full = np.full(n_pix, np.nan, dtype=np.float64)
+        full[obs_pix_global] = vec_obs
+        maps_2d.append(_img_from_vec(full, nx=nx, ny=ny))
+    all_vals = np.concatenate([m.ravel() for m in maps_2d])
+    all_vals = all_vals[np.isfinite(all_vals)]
+    if all_vals.size == 0:
+        vmin, vmax = -1.0, 1.0
+    else:
+        lim = float(np.percentile(np.abs(all_vals), 99.0))
+        lim = max(lim, 1e-30)
+        vmin, vmax = -lim, lim
+    fig, axes = plt.subplots(1, k_show, figsize=(2.2 * k_show, 4.0), dpi=150, sharex=True, sharey=True)
+    if k_show == 1:
+        axes = [axes]
+    im = None
+    for i, ax in enumerate(axes):
+        im = _imshow(ax, maps_2d[i], extent=extent, title=f"mode {i} (most uncertain first)", vmin=vmin, vmax=vmax)
+    fig.subplots_adjust(right=0.92, wspace=0.2)
+    if im is not None:
+        pos = axes[-1].get_position()
+        cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.015, pos.height])
+        fig.colorbar(im, cax=cax, orientation="vertical").set_label("a.u.")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_uncertain_eigenvalues(
     out_path: pathlib.Path,
     uncertain_variances: np.ndarray,
@@ -703,6 +758,17 @@ def main(synthesis_npz: pathlib.Path) -> None:
 
     if uncertain_variances.size > 0:
         plot_uncertain_eigenvalues(plots_dir / "uncertain_eigenvalues_ml.png", uncertain_variances)
+    if uncertain_vectors.shape[1] > 0:
+        plot_uncertain_eigenmode_maps(
+            plots_dir / "uncertain_eigenmode_maps_ml.png",
+            uncertain_vectors,
+            good_mask,
+            obs_pix_global,
+            nx,
+            ny,
+            extent,
+            n_show=5,
+        )
     if uncertain_vectors.shape[1] > 0 and np.any(tod_paths):
         coadd_2d_f, rec_2d_f = plot_eigenmode_removed_maps(
             plots_dir / "maps_eigenmode_removed_ml.png",

@@ -23,9 +23,9 @@ from .reconstruct_scan import load_scan_artifact
 
 jax.config.update("jax_enable_x64", True)
 
-N_UNCERTAIN_MODES = 100
-LANCZOS_OVERSAMPLE = 64
-LANCZOS_MAXITER = 256
+N_UNCERTAIN_MODES = 4096
+LANCZOS_OVERSAMPLE = 256
+LANCZOS_MAXITER = 8192
 LANCZOS_SEED = 0
 
 
