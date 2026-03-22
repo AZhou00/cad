@@ -36,7 +36,7 @@ OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 OUT_SUBDIR_MULTI = "synthesized"
 OUT_FILENAME = "recon_combined_ml_margined.npz"
 MARGIN_FRAC = 0.10
-N_UNCERTAIN_MODES = 1024
+N_UNCERTAIN_MODES = 200
 LANCZOS_OVERSAMPLE = 128
 LANCZOS_MAXITER = 2048
 # Heuristic for fixed k eigenmodes:

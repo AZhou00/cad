@@ -23,8 +23,9 @@ if str(CAD_DIR / "src") not in sys.path:
 
 import numpy as np
 
+from cad.parallel_solve.artifact_io import load_scan_artifact
 from cad.parallel_solve.layout import GlobalLayout, build_layout
-from cad.parallel_solve.reconstruct_scan import load_scan_artifact, run_one_scan
+from cad.parallel_solve.reconstruct_scan import run_one_scan
 from cad.parallel_solve.synthesize_scan import run_synthesis
 
 FIELD_ID = "ra0hdec-59.75"
@@ -170,7 +171,7 @@ def main() -> None:
             lines.extend([
                 "Load per-scan artifact (I/O)",
                 "   Read cov_inv, Pt_Ninv_d, obs_pix_global_scan from scan_XXXX_ml.npz",
-                "   Implemented by: cad.parallel_solve.reconstruct_scan.load_scan_artifact",
+                "   Implemented by: cad.parallel_solve.artifact_io.load_scan_artifact",
                 f"   ___ Benchmark: {t_load:.6f} s (mean over {N_REP}), n_obs_scan={n_s}, cov_inv {n_s}x{n_s}.",
                 "   Used once per scan during synthesis.",
                 "",

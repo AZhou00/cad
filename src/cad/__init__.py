@@ -1,24 +1,18 @@
 """
 cad: CMB atmosphere decontamination utilities.
 
-The main public entry points are:
-  - `solve_single_scan` (single scan)
-  - `synthesize_scans` (multi-scan)
+Public exports at package root:
+  - `FourierGaussianPrior`
+  - `estimate_wind_deg_per_s`
+
+Parallel reconstruction/synthesis entry points live under `cad.parallel_solve`.
 """
 
-from .direct_solve import reconstruct_scan
-from .direct_solve import synthesize_scan
-from .direct_solve.reconstruct_scan import ScanSolve, solve_single_scan
-from .direct_solve.synthesize_scan import MultiScanSolve, synthesize_scans
 from .prior import FourierGaussianPrior
 from .wind import estimate_wind_deg_per_s
 
 __all__ = [
     "FourierGaussianPrior",
     "estimate_wind_deg_per_s",
-    "ScanSolve",
-    "solve_single_scan",
-    "MultiScanSolve",
-    "synthesize_scans",
 ]
 

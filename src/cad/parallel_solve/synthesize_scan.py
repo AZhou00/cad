@@ -18,8 +18,8 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
+from .artifact_io import load_scan_artifact
 from .layout import GlobalLayout, load_layout
-from .reconstruct_scan import load_scan_artifact
 
 jax.config.update("jax_enable_x64", True)
 

@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from cad.parallel_solve.layout import GlobalLayout, load_layout
-from cad.parallel_solve.reconstruct_scan import load_scan_artifact
+from cad.parallel_solve.artifact_io import load_scan_artifact
 from cad.parallel_solve.synthesize_scan import run_synthesis
 
 

@@ -1,7 +1,7 @@
 """
 Shared dataset discovery and scan NPZ loading.
 
-Used by both direct_solve and parallel_solve. Input layout:
+Used by reconstruction/synthesis pipelines. Input layout:
   <dataset_dir>/<field_id>/binned_tod_*/<scan>.npz
 """
 
@@ -63,7 +63,7 @@ def discover_scan_paths(
 
 def load_scan(npz_path: Path) -> dict:
     """
-    Load full scan NPZ. Single source for direct_solve and parallel_solve.
+    Load full scan NPZ. Shared source for pipeline stages.
 
     Returns dict with: eff_tod_mk (n_time, n_det), pix_index (n_time, n_det, 2),
     t_s (n_time,), pixel_size_deg, eff_pos_deg, boresight_pos_deg, eff_counts,

@@ -52,12 +52,12 @@ if str(CAD_DIR / "src") not in sys.path:
 
 from cad import map as map_util
 from cad import power
-from cad.parallel_solve.reconstruct_scan import load_scan_artifact
+from cad.parallel_solve.artifact_io import load_scan_artifact
 
 # Toggle which synthesis output to plot by default (when no CLI path is given).
 # - "full": uses recon_combined_ml_full.npz and writes plots_full/
 # - "margined": uses recon_combined_ml_margined.npz and writes plots_margined/
-PLOT_DATA_VARIANT = "full"
+PLOT_DATA_VARIANT = "margined"
 if PLOT_DATA_VARIANT == "full":
     DEFAULT_SYNTHESIS_FILENAME = "recon_combined_ml_full.npz"
     DEFAULT_PLOTS_SUBDIR = "plots_full"
@@ -107,6 +107,27 @@ def _imshow(ax, img, *, extent, title: str, vmin=None, vmax=None, cmap="RdBu_r")
     ax.set_xlabel("RA [deg]")
     ax.set_ylabel("Dec [deg]")
     return im
+
+
+def _add_shared_colorbar(
+    fig,
+    axes,
+    im,
+    *,
+    label: str,
+    pad: float = 0.012,
+    width: float = 0.018,
+) -> None:
+    """One colorbar aligned to span all provided axes."""
+    axs = [ax for ax in np.asarray(axes).reshape(-1) if ax.get_visible()]
+    if not axs:
+        return
+    boxes = [ax.get_position() for ax in axs]
+    x1 = max(b.x1 for b in boxes)
+    y0 = min(b.y0 for b in boxes)
+    y1 = max(b.y1 for b in boxes)
+    cax = fig.add_axes([x1 + pad, y0, width, y1 - y0])
+    fig.colorbar(im, cax=cax, orientation="vertical").set_label(label)
 
 
 def _binned_tod_paths(obs_data_dir: pathlib.Path) -> list[pathlib.Path]:
@@ -206,10 +227,8 @@ def plot_naive_vs_combined_maps(
     fig, axs = plt.subplots(n, 1, figsize=(9.0, 2.3 * n), dpi=150, sharex=True, sharey=True)
     ims = [_imshow(axs[0], naive, extent=extent, title="Naive coadd [mK]", vmin=vmin, vmax=vmax),
            _imshow(axs[1], rec_masked, extent=extent, title="Recon combined (ML) [mK]", vmin=vmin, vmax=vmax)]
-    fig.subplots_adjust(right=0.86, hspace=0.25)
-    pos = axs[-1].get_position()
-    cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
-    fig.colorbar(ims[-1], cax=cax, orientation="vertical").set_label("mK")
+    fig.subplots_adjust(right=0.88, hspace=0.25)
+    _add_shared_colorbar(fig, axs, ims[-1], label="mK")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -440,7 +459,7 @@ def plot_uncertain_eigenmode_maps(
     nx: int,
     ny: int,
     extent: list[float],
-    n_show: int = 5,
+    n_show: int = 15,
 ) -> None:
     """
     First n_show unconstrained eigenmodes as maps on the observed footprint.
@@ -471,17 +490,20 @@ def plot_uncertain_eigenmode_maps(
         lim = float(np.percentile(np.abs(all_vals), 99.0))
         lim = max(lim, 1e-30)
         vmin, vmax = -lim, lim
-    fig, axes = plt.subplots(1, k_show, figsize=(2.2 * k_show, 4.0), dpi=150, sharex=True, sharey=True)
-    if k_show == 1:
-        axes = [axes]
+    n_rows, n_cols = 3, 5
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(11.0, 6.5), dpi=150, sharex=True, sharey=True)
+    axes_flat = list(np.asarray(axes).reshape(-1))
     im = None
-    for i, ax in enumerate(axes):
-        im = _imshow(ax, maps_2d[i], extent=extent, title=f"mode {i} (most uncertain first)", vmin=vmin, vmax=vmax)
-    fig.subplots_adjust(right=0.92, wspace=0.2)
+    shown_axes = []
+    for i, ax in enumerate(axes_flat):
+        if i < k_show:
+            im = _imshow(ax, maps_2d[i], extent=extent, title=f"mode {i} (most uncertain first)", vmin=vmin, vmax=vmax)
+            shown_axes.append(ax)
+        else:
+            ax.set_visible(False)
+    fig.subplots_adjust(right=0.9, wspace=0.18, hspace=0.28)
     if im is not None:
-        pos = axes[-1].get_position()
-        cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.015, pos.height])
-        fig.colorbar(im, cax=cax, orientation="vertical").set_label("a.u.")
+        _add_shared_colorbar(fig, shown_axes, im, label="a.u.", pad=0.01, width=0.015)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -554,10 +576,8 @@ def plot_eigenmode_removed_maps(
     fig, axs = plt.subplots(2, 1, figsize=(9.0, 4.6), dpi=150, sharex=True, sharey=True)
     _imshow(axs[0], coadd_masked, extent=extent, title="Coadd (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
     im = _imshow(axs[1], rec_masked, extent=extent, title="Synthesized (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
-    fig.subplots_adjust(right=0.86, hspace=0.25)
-    pos = axs[-1].get_position()
-    cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.02, pos.height])
-    fig.colorbar(im, cax=cax, orientation="vertical").set_label("mK")
+    fig.subplots_adjust(right=0.88, hspace=0.25)
+    _add_shared_colorbar(fig, axs, im, label="mK")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -781,7 +801,7 @@ def main(synthesis_npz: pathlib.Path, plots_subdir: str = DEFAULT_PLOTS_SUBDIR) 
             nx,
             ny,
             extent,
-            n_show=5,
+            n_show=15,
         )
     if uncertain_vectors.shape[1] > 0 and np.any(tod_paths):
         coadd_2d_f, rec_2d_f = plot_eigenmode_removed_maps(
