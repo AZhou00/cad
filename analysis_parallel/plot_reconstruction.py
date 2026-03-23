@@ -2,25 +2,15 @@
 """
 Plot combined and per-scan reconstructions (parallel path output).
 
-Input: path to a synthesis npz (always named like recon_combined_ml_*_<k>modes.npz from run_synthesis_*).
-  Pass this path on the CLI (no default). Example: .../field_id/synthesized/recon_combined_ml_margined_200modes.npz.
+Input: path to a single synthesis npz from run_synthesis_full.py or run_synthesis_margined.py
+  (e.g. .../synthesized/recon_combined_ml_margined.npz or .../<obs_id>/recon_combined_ml_full.npz).
   field_id is inferred as path.parent.parent.name for binned TOD lookup (DATA_DIR/field_id/<obs_id>/).
   Optional: out_dir/scans/scan_*_ml.npz for per-scan map/precision plots; binned TOD from scan_metadata obs ids.
-Output: out_dir/plots_full/<K>/ or out_dir/plots_margined/<K>/ with out_dir = path.parent (synthesized/), K = effective
-  uncertain-mode count after optional slicing (modes removed in deprojection plots). Branch is inferred from the npz name
-  (recon_combined_ml_full_* vs recon_combined_ml_margined_*).
+Output: out_dir/plots_full/<K>/ or out_dir/plots_margined/<K>/ with out_dir = path.parent, K = effective
+  uncertain-mode count after optional CLI slicing. Branch from filename: recon_combined_ml_full* vs *margined*.
 
-Synthesis npz structure:
-  - bbox_ix0, bbox_iy0, nx, ny, pixel_size_deg: scalars
-  - c_hat_full_mk: (n_pix,) ML map on full CMB grid [mK]
-  - c_hat_obs: (n_obs,) ML map on observed pixels
-  - obs_pix_global: (n_obs,) global pixel indices
-  - cov_inv_tot: (n_obs, n_obs) global precision
-  - good_mask: (n_obs,) bool
-  - uncertain_mode_vectors: (n_good, k), uncertain_mode_variances: (k,)
-  - scan_metadata: object array of length n_scans; each element is a dict with
-    observation_id (str), scan_index (int), wind_deg_per_s (2,), wind_sigma_x_deg_per_s (float),
-    wind_sigma_y_deg_per_s (float), ell_atm (n_ell,), cl_atm_mk2 (n_ell,)
+Full synthesis NPZ schema: see cad.parallel_solve.synthesize_scan module docstring (cad.parallel_solve.artifact_io
+  lists required keys; missing keys raise KeyError).
 
 Output plots (each function docstring lists I/O shapes):
   maps_naive_vs_combined_ml, power2d_naive_vs_combined_ml, cl_naive_vs_combined_ml,
@@ -29,23 +19,10 @@ Output plots (each function docstring lists I/O shapes):
   uncertain_eigenvalues_ml, uncertain_eigenmode_maps_ml, maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
 
 CLI (synthesis npz path is required):
-  python plot_reconstruction.py /path/to/recon_combined_ml_margined_200modes.npz
-  python plot_reconstruction.py /path/to/recon_combined_ml_margined_200modes.npz 50
-
-Example:
-cd /global/homes/j/junzhez/cmb-atmosphere/cad/analysis_parallel
-for f in /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/synthesized/recon_combined_ml_margined_*modes.npz; do
-  python plot_reconstruction.py "$f"
-done
-
-
-cd /global/homes/j/junzhez/cmb-atmosphere/cad/analysis_parallel
-for f in /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/synthesized/recon_combined_ml_full_*modes.npz; do
-  python plot_reconstruction.py "$f"
-done
+  python plot_reconstruction.py /path/to/recon_combined_ml_margined.npz
+  python plot_reconstruction.py /path/to/recon_combined_ml_margined.npz 50
 
 Second arg n_modes: optional; use only the first n_modes uncertain eigenmodes for eigenvalue / eigenmode / deprojection plots.
-Output directory is <npz_parent>/plots_full/<K>/ or .../plots_margined/<K>/ (K = modes used/removed after slicing).
 
 Observation ids for binned TOD come from scan_metadata; per-scan plots use out_dir/scans/ when present.
 """
@@ -69,7 +46,8 @@ if str(CAD_DIR / "src") not in sys.path:
 
 from cad import map as map_util
 from cad import power
-from cad.parallel_solve.artifact_io import load_scan_artifact
+from cad.parallel_solve.artifact_io import assert_synthesis_npz_keys, load_scan_artifact
+from cad.plot_util import deproject_uncertain_modes, img_from_vec
 
 N_ELL_BINS = 128
 BINNED_TOD_SUBDIR = "binned_tod_10arcmin"
@@ -81,7 +59,7 @@ def _plots_branch_from_synthesis_name(filename: str) -> str:
     """
     Return 'plots_full' or 'plots_margined' from parallel synthesis filenames.
 
-    Expected stems: recon_combined_ml_full_<k>modes, recon_combined_ml_margined_<k>modes.
+    Accepts recon_combined_ml_full*.npz, recon_combined_ml_margined*.npz, and legacy *_<k>modes stems.
     """
     stem = pathlib.Path(filename).stem
     if "_margined_" in stem or stem.startswith("recon_combined_ml_margined"):
@@ -90,14 +68,8 @@ def _plots_branch_from_synthesis_name(filename: str) -> str:
         return "plots_full"
     raise ValueError(
         f"Cannot infer plots_full vs plots_margined from filename {filename!r}; "
-        "expected stem like recon_combined_ml_full_<k>modes or recon_combined_ml_margined_<k>modes."
+        "expected stem containing recon_combined_ml_full or recon_combined_ml_margined."
     )
-
-
-def _img_from_vec(vec: np.ndarray, *, nx: int, ny: int) -> np.ndarray:
-    """vec: pix = iy + ix*ny. Return (ny, nx) with iy as rows."""
-    v = np.asarray(vec, dtype=np.float64).reshape(int(nx), int(ny))
-    return v.T
 
 
 def _extent_deg(*, bbox: map_util.BBox, pixel_size_deg: float) -> list[float]:
@@ -215,7 +187,7 @@ def _load_scan_recon_map(npz_path: pathlib.Path) -> np.ndarray | None:
     n_pix = nx * ny
     c_full = np.zeros((n_pix,), dtype=np.float64)
     c_full[obs_pix] = c_obs
-    return _img_from_vec(c_full, nx=nx, ny=ny)
+    return img_from_vec(c_full, nx=nx, ny=ny)
 
 
 def _scan_npz_sort_key(p: pathlib.Path) -> int:
@@ -454,23 +426,6 @@ def plot_synthesized_precision(out_path: pathlib.Path, cov_inv_tot: np.ndarray) 
     plt.close(fig)
 
 
-def _deproject_uncertain_modes(
-    vec_obs: np.ndarray,
-    good_mask: np.ndarray,
-    uncertain_vectors: np.ndarray,
-) -> np.ndarray:
-    """Set amplitudes of unconstrained modes to zero (deproject). vec_obs (n_obs,), good (n_obs,), uncertain_vectors (n_good, k). Returns vec_obs with those modes zeroed."""
-    out = np.asarray(vec_obs, dtype=np.float64).copy()
-    good = np.asarray(good_mask, dtype=bool)
-    V_good = np.asarray(uncertain_vectors, dtype=np.float64)
-    if V_good.size == 0:
-        return out
-    vec_good = out[good]
-    vec_good -= V_good @ (V_good.T @ vec_good)
-    out[good] = vec_good
-    return out
-
-
 def plot_uncertain_eigenmode_maps(
     out_path: pathlib.Path,
     uncertain_vectors: np.ndarray,
@@ -501,7 +456,7 @@ def plot_uncertain_eigenmode_maps(
         vec_obs[good] = V[:, i]
         full = np.full(n_pix, np.nan, dtype=np.float64)
         full[obs_pix_global] = vec_obs
-        maps_2d.append(_img_from_vec(full, nx=nx, ny=ny))
+        maps_2d.append(img_from_vec(full, nx=nx, ny=ny))
     all_vals = np.concatenate([m.ravel() for m in maps_2d])
     all_vals = all_vals[np.isfinite(all_vals)]
     if all_vals.size == 0:
@@ -574,7 +529,7 @@ def plot_eigenmode_removed_maps(
     Returns (coadd_2d_filtered, rec_2d_filtered) for CL plot.
 
     I/O: naive_2d (ny, nx), c_hat_obs (n_obs,), obs_pix_global (n_obs,), good_mask (n_obs,),
-    uncertain_vectors (n_obs, k), nx/ny scalars, extent [4], hit_mask (ny, nx). Output: PNG to out_path;
+    uncertain_vectors (n_good, k), nx/ny scalars, extent [4], hit_mask (ny, nx). Output: PNG to out_path;
     returns (coadd_2d (ny, nx), rec_2d (ny, nx)).
     """
     n_pix = nx * ny
@@ -582,14 +537,14 @@ def plot_eigenmode_removed_maps(
     naive_vec = np.where(np.isfinite(naive_vec), naive_vec, 0.0)
     naive_vec = naive_vec.T.ravel()
     coadd_obs = np.asarray(naive_vec[obs_pix_global], dtype=np.float64)
-    coadd_filt = _deproject_uncertain_modes(coadd_obs, good_mask, uncertain_vectors)
-    rec_filt = _deproject_uncertain_modes(c_hat_obs, good_mask, uncertain_vectors)
+    coadd_filt = deproject_uncertain_modes(coadd_obs, good_mask, uncertain_vectors)
+    rec_filt = deproject_uncertain_modes(c_hat_obs, good_mask, uncertain_vectors)
     coadd_full = np.full(n_pix, np.nan, dtype=np.float64)
     rec_full = np.full(n_pix, np.nan, dtype=np.float64)
     coadd_full[obs_pix_global] = coadd_filt
     rec_full[obs_pix_global] = rec_filt
-    coadd_2d = _img_from_vec(coadd_full, nx=nx, ny=ny)
-    rec_2d_filt = _img_from_vec(rec_full, nx=nx, ny=ny)
+    coadd_2d = img_from_vec(coadd_full, nx=nx, ny=ny)
+    rec_2d_filt = img_from_vec(rec_full, nx=nx, ny=ny)
     vmin, vmax = _robust_vmin_vmax(np.concatenate([coadd_2d.ravel(), rec_2d_filt.ravel()]))
     rec_masked = np.where(hit_mask & np.isfinite(rec_2d_filt), rec_2d_filt, np.nan).astype(np.float32)
     coadd_masked = np.where(hit_mask & np.isfinite(coadd_2d), coadd_2d, np.nan).astype(np.float32)
@@ -739,6 +694,7 @@ def main(
     scan_dir = scan_dir if scan_dir.is_dir() else None
 
     with np.load(combined_npz, allow_pickle=True) as rc:
+        assert_synthesis_npz_keys(rc)
         bbox_ix0 = int(rc["bbox_ix0"])
         bbox_iy0 = int(rc["bbox_iy0"])
         nx = int(rc["nx"])
@@ -769,7 +725,7 @@ def main(
     bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
     extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
     pixel_res_rad = pixel_size_deg * np.pi / 180.0
-    rec = _img_from_vec(rec_full, nx=nx, ny=ny)
+    rec = img_from_vec(rec_full, nx=nx, ny=ny)
 
     tod_paths: list[pathlib.Path] = []
     for d in obs_data_dirs:

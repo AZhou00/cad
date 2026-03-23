@@ -8,7 +8,7 @@ bbox where edge pixels are dropped from every scan before summation:
   - precision/covariance diagnostics
   - uncertain eigenmodes
 
-Writes recon_combined_ml_margined_<k>modes.npz per k in UNCERTAIN_MODE_VARIANTS (same schema; plot_reconstruction.py).
+Writes a single recon_combined_ml_margined.npz (see synthesize_scan module docstring for NPZ schema).
 
 CLI
 ---
@@ -36,11 +36,10 @@ OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 OUT_SUBDIR_MULTI = "synthesized"
 OUT_FILENAME = "recon_combined_ml_margined.npz"
 MARGIN_FRAC = 0.10
-# Lanczos rank = max(UNCERTAIN_MODE_VARIANTS); one npz per k with *_k*modes.npz.
-UNCERTAIN_MODE_VARIANTS = [10, 50, 100, 200, 300, 400]
+N_UNCERTAIN_MODES = 400
 LANCZOS_OVERSAMPLE = 128
 LANCZOS_MAXITER = 2048
-# Heuristic: Lanczos rank = max(UNCERTAIN_MODE_VARIANTS); lanczos_maxiter >= 2*max(k); oversample ~ max(k)/16..max(k)/4.
+# Heuristic: lanczos_maxiter >= 2 * N_UNCERTAIN_MODES; oversample ~ N_UNCERTAIN_MODES/16..N_UNCERTAIN_MODES/4.
 
 
 def main() -> None:
@@ -57,7 +56,7 @@ def main() -> None:
             layout,
             scan_dir,
             out_path,
-            uncertain_mode_variants=UNCERTAIN_MODE_VARIANTS,
+            n_uncertain_modes=N_UNCERTAIN_MODES,
             lanczos_oversample=LANCZOS_OVERSAMPLE,
             lanczos_maxiter=LANCZOS_MAXITER,
             observation_id=obs_id,
@@ -68,7 +67,7 @@ def main() -> None:
             OUT_BASE,
             FIELD_ID,
             observation_ids,
-            uncertain_mode_variants=UNCERTAIN_MODE_VARIANTS,
+            n_uncertain_modes=N_UNCERTAIN_MODES,
             lanczos_oversample=LANCZOS_OVERSAMPLE,
             lanczos_maxiter=LANCZOS_MAXITER,
             out_subdir=OUT_SUBDIR_MULTI,

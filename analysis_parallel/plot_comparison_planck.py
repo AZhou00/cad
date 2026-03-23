@@ -3,9 +3,10 @@
 Compare margined synthesis maps to Planck SMICA T in the same RA/Dec patch.
 
 Requires a margined synthesis npz with uncertain_mode_vectors having at least max(K_MODES_REMOVED) columns.
+NPZ schema: cad.parallel_solve.synthesize_scan (required keys validated via assert_synthesis_npz_keys).
 
 CLI:
-  python plot_comparison_planck.py <recon_combined_ml_margined_*modes.npz>
+  python plot_comparison_planck.py <recon_combined_ml_margined.npz>
 
 Writes under <synthesized>/plots_margined/planck_compare/:
   cl_vs_planck_ml.png, coherence_vs_planck_ml.png, maps_planck_vs_deproj_ml.png
@@ -40,7 +41,9 @@ if str(THIS_DIR) not in sys.path:
 
 from cad import map as map_util
 from cad import power
+from cad.parallel_solve.artifact_io import assert_synthesis_npz_keys
 from cad.planck import PlanckMapLoader
+from cad.plot_util import deproject_uncertain_modes, img_from_vec
 
 import plot_reconstruction as pr
 
@@ -53,12 +56,12 @@ def _recon_deproj_2d(
     nx: int,
     ny: int,
 ) -> np.ndarray:
-    """Deproject first k columns of uncertain_vectors; return (ny, nx) in mK."""
+    """Deproject along columns of uncertain_vectors; return (ny, nx) in mK."""
     n_pix = int(nx * ny)
-    rec_filt = pr._deproject_uncertain_modes(c_hat_obs, good_mask, uncertain_vectors)
+    rec_filt = deproject_uncertain_modes(c_hat_obs, good_mask, uncertain_vectors)
     rec_full = np.full(n_pix, np.nan, dtype=np.float64)
     rec_full[obs_pix_global] = rec_filt
-    return pr._img_from_vec(rec_full, nx=nx, ny=ny)
+    return img_from_vec(rec_full, nx=nx, ny=ny)
 
 
 def _sample_healpix_to_patch(
@@ -152,12 +155,13 @@ def _radial_fft_coherence(
 def main(synthesis_npz: pathlib.Path) -> None:
     npz = pathlib.Path(synthesis_npz).resolve()
     if "_margined_" not in npz.stem and not npz.stem.startswith("recon_combined_ml_margined"):
-        raise ValueError("This script expects a margined synthesis npz (recon_combined_ml_margined_*modes.npz).")
+        raise ValueError("This script expects a margined synthesis npz (e.g. recon_combined_ml_margined.npz).")
 
     out_dir = npz.parent / "plots_margined" / "planck_compare"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with np.load(npz, allow_pickle=True) as rc:
+        assert_synthesis_npz_keys(rc)
         bbox_ix0 = int(rc["bbox_ix0"])
         bbox_iy0 = int(rc["bbox_iy0"])
         nx = int(rc["nx"])
@@ -193,7 +197,7 @@ def main(synthesis_npz: pathlib.Path) -> None:
     if not np.any(hit_mask):
         buf = np.zeros(int(nx * ny), dtype=np.float32)
         buf[obs_pix_global] = 1.0
-        hit_mask = pr._img_from_vec(buf, nx=nx, ny=ny) > 0.5
+        hit_mask = img_from_vec(buf, nx=nx, ny=ny) > 0.5
 
     pbar = tqdm(total=2 + len(k_use), desc="planck_compare", unit="step")
     pk = PlanckMapLoader(str(PLANCK_DATA_DIR)).load_smica_TQU1024(load_pol=False)
@@ -324,6 +328,6 @@ def main(synthesis_npz: pathlib.Path) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python plot_comparison_planck.py <recon_combined_ml_margined_*modes.npz>", file=sys.stderr)
+        print("Usage: python plot_comparison_planck.py <recon_combined_ml_margined.npz>", file=sys.stderr)
         sys.exit(1)
     main(pathlib.Path(sys.argv[1]))

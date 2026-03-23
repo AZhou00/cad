@@ -111,12 +111,11 @@ def test_synthesis_two_scans_minimal():
             layout,
             scan_dir,
             out_path,
-            uncertain_mode_variants=[8],
+            n_uncertain_modes=8,
             lanczos_oversample=4,
             lanczos_maxiter=16,
         )
-        out_written = out_path.parent / f"{out_path.stem}_8modes{out_path.suffix}"
-        with np.load(out_written, allow_pickle=True) as z:
+        with np.load(out_path, allow_pickle=True) as z:
             c_hat_obs = np.asarray(z["c_hat_obs"], dtype=np.float64)
             c_hat_full_mk = np.asarray(z["c_hat_full_mk"], dtype=np.float64)
         assert c_hat_obs.shape == (n_obs,)

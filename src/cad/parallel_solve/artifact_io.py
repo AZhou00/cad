@@ -5,8 +5,38 @@ I/O helpers for per-scan artifacts written by parallel reconstruction.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+
+# Required keys in synthesis NPZ written by synthesize_scan.run_synthesis / run_synthesis_multi_obs.
+SYNTHESIS_NPZ_REQUIRED_KEYS: tuple[str, ...] = (
+    "bbox_ix0",
+    "bbox_iy0",
+    "nx",
+    "ny",
+    "pixel_size_deg",
+    "c_hat_full_mk",
+    "c_hat_obs",
+    "obs_pix_global",
+    "cov_inv_tot",
+    "good_mask",
+    "uncertain_mode_vectors",
+    "uncertain_mode_variances",
+    "n_uncertain_modes_stored",
+    "lanczos_n_modes",
+    "scan_metadata",
+)
+
+
+def assert_synthesis_npz_keys(z: Any) -> None:
+    """Raise KeyError if z is missing any synthesis artifact key (fail loud for API drift)."""
+    missing = [k for k in SYNTHESIS_NPZ_REQUIRED_KEYS if k not in z.files]
+    if missing:
+        raise KeyError(
+            "Synthesis NPZ missing required keys: "
+            f"{missing}. Expected a single-file output from run_synthesis / run_synthesis_multi_obs."
+        )
 
 
 def load_scan_artifact(npz_path: Path) -> dict:

@@ -195,7 +195,7 @@ def main() -> None:
                 layout_synth,
                 RECONSTRUCTED_DIR,
                 out_npz,
-                uncertain_mode_variants=[256],
+                n_uncertain_modes=256,
                 lanczos_oversample=32,
                 lanczos_maxiter=512,
                 timings=td,
