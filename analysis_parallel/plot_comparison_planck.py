@@ -9,7 +9,7 @@ CLI:
   python plot_comparison_planck.py <recon_combined_ml_margined.npz>
 
 Writes under <synthesized>/plots_margined/planck_compare/:
-  cl_vs_planck_ml.png, dl_vs_planck_ml.png (D_ell = ell(ell+1)C_ell/(2 pi)),
+  cl_vs_planck_ml.png, dl_vs_planck_ml.png (D_ell in muK^2 from mK^2 C_ell),
   coherence_vs_planck_ml.png, maps_planck_vs_deproj_ml.png
 Each includes naive coadd (dashed gray) for C_ell / D_ell and coherence vs Planck. Map figure: Planck and synth rows share one color bar; naive coadd is last with its own scale.
 """
@@ -106,9 +106,11 @@ def _sample_healpix_to_patch(
     return t_mk, ok
 
 
-def _cl_to_dl_mk2(ell: np.ndarray, cl_mk2: np.ndarray) -> np.ndarray:
+def _cl_to_dl_muk2(ell: np.ndarray, cl_mk2: np.ndarray) -> np.ndarray:
     """
-    D_ell = C_ell * ell * (ell + 1) / (2 pi), same temperature units as C_ell (mK^2 here).
+    D_ell = C_ell * ell * (ell + 1) / (2 pi), output in muK^2.
+
+    C_ell from the pipeline is in mK^2; multiply by (1000)^2 after the D_ell factor.
 
     ell: bin centers from power.radial_cl_1d_from_map (rad^-1 flat-sky convention in cad/power).
     """
@@ -116,7 +118,7 @@ def _cl_to_dl_mk2(ell: np.ndarray, cl_mk2: np.ndarray) -> np.ndarray:
     cl = np.asarray(cl_mk2, dtype=np.float64)
     out = np.full_like(cl, np.nan, dtype=np.float64)
     ok = np.isfinite(ell) & np.isfinite(cl) & (ell > 0)
-    out[ok] = cl[ok] * ell[ok] * (ell[ok] + 1.0) / (2.0 * np.pi)
+    out[ok] = cl[ok] * ell[ok] * (ell[ok] + 1.0) / (2.0 * np.pi) * 1e6
     return out
 
 
@@ -301,10 +303,10 @@ def main(synthesis_npz: pathlib.Path) -> None:
     plt.close(fig_cl)
 
     fig_dl, ax_dl = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
-    ax_dl.plot(ell_ref, _cl_to_dl_mk2(ell_ref, cl_pl), color="k", lw=2.0, label="Planck SMICA T")
+    ax_dl.plot(ell_ref, _cl_to_dl_muk2(ell_ref, cl_pl), color="k", lw=2.0, label="Planck SMICA T")
     ax_dl.plot(
         ell_ref,
-        _cl_to_dl_mk2(ell_ref, cl_naive),
+        _cl_to_dl_muk2(ell_ref, cl_naive),
         color="0.45",
         lw=1.5,
         ls="--",
@@ -313,14 +315,14 @@ def main(synthesis_npz: pathlib.Path) -> None:
     for k in k_use:
         ax_dl.plot(
             ell_ref,
-            _cl_to_dl_mk2(ell_ref, cl_recon_by_k[k]),
+            _cl_to_dl_muk2(ell_ref, cl_recon_by_k[k]),
             lw=1.2,
             label=f"synth, {k} modes removed",
         )
     ax_dl.set_xscale("log")
     ax_dl.set_yscale("log")
     ax_dl.set_xlabel(r"$\ell$")
-    ax_dl.set_ylabel(r"$D_\ell = \ell(\ell+1)C_\ell/(2\pi)$ [mK$^2$]")
+    ax_dl.set_ylabel(r"$D_\ell = \ell(\ell+1)C_\ell/(2\pi)$ [$\mu$K$^2$]")
     ax_dl.grid(True, which="both", alpha=0.2)
     ax_dl.legend(fontsize=7, loc="best")
     fig_dl.tight_layout()
