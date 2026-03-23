@@ -9,8 +9,9 @@ CLI:
   python plot_comparison_planck.py <recon_combined_ml_margined.npz>
 
 Writes under <synthesized>/plots_margined/planck_compare/:
-  cl_vs_planck_ml.png, coherence_vs_planck_ml.png, maps_planck_vs_deproj_ml.png
-Each includes naive coadd (dashed gray) for C_ell and coherence vs Planck. Map figure: Planck and synth rows share one color bar; naive coadd is last with its own scale.
+  cl_vs_planck_ml.png, dl_vs_planck_ml.png (D_ell = ell(ell+1)C_ell/(2 pi)),
+  coherence_vs_planck_ml.png, maps_planck_vs_deproj_ml.png
+Each includes naive coadd (dashed gray) for C_ell / D_ell and coherence vs Planck. Map figure: Planck and synth rows share one color bar; naive coadd is last with its own scale.
 """
 
 from __future__ import annotations
@@ -103,6 +104,20 @@ def _sample_healpix_to_patch(
     t_mk = np.asarray(t_uK, dtype=np.float64) * 1e-3
     ok = w > 0.5
     return t_mk, ok
+
+
+def _cl_to_dl_mk2(ell: np.ndarray, cl_mk2: np.ndarray) -> np.ndarray:
+    """
+    D_ell = C_ell * ell * (ell + 1) / (2 pi), same temperature units as C_ell (mK^2 here).
+
+    ell: bin centers from power.radial_cl_1d_from_map (rad^-1 flat-sky convention in cad/power).
+    """
+    ell = np.asarray(ell, dtype=np.float64)
+    cl = np.asarray(cl_mk2, dtype=np.float64)
+    out = np.full_like(cl, np.nan, dtype=np.float64)
+    ok = np.isfinite(ell) & np.isfinite(cl) & (ell > 0)
+    out[ok] = cl[ok] * ell[ok] * (ell[ok] + 1.0) / (2.0 * np.pi)
+    return out
 
 
 def _radial_fft_coherence(
@@ -249,6 +264,7 @@ def main(synthesis_npz: pathlib.Path) -> None:
     ax_rho.plot(ell_n, rho_pn, color="0.45", lw=1.5, ls="--", label="Naive vs Planck")
 
     recons: dict[int, np.ndarray] = {}
+    cl_recon_by_k: dict[int, np.ndarray] = {}
     for k in k_use:
         vk = uncertain_vectors[:, :k]
         rec = _recon_deproj_2d(c_hat_obs, good_mask, obs_pix_global, vk, nx, ny)
@@ -261,6 +277,7 @@ def main(synthesis_npz: pathlib.Path) -> None:
             hit_mask=common,
             n_ell_bins=N_ELL_BINS,
         )
+        cl_recon_by_k[k] = cl_r
         ax_cl.plot(ell_ref, cl_r, lw=1.2, label=f"synth, {k} modes removed")
 
         ell_c, rho = _radial_fft_coherence(
@@ -282,6 +299,33 @@ def main(synthesis_npz: pathlib.Path) -> None:
     fig_cl.tight_layout()
     fig_cl.savefig(out_dir / "cl_vs_planck_ml.png", bbox_inches="tight")
     plt.close(fig_cl)
+
+    fig_dl, ax_dl = plt.subplots(1, 1, figsize=(7.0, 4.0), dpi=150)
+    ax_dl.plot(ell_ref, _cl_to_dl_mk2(ell_ref, cl_pl), color="k", lw=2.0, label="Planck SMICA T")
+    ax_dl.plot(
+        ell_ref,
+        _cl_to_dl_mk2(ell_ref, cl_naive),
+        color="0.45",
+        lw=1.5,
+        ls="--",
+        label="Naive coadd",
+    )
+    for k in k_use:
+        ax_dl.plot(
+            ell_ref,
+            _cl_to_dl_mk2(ell_ref, cl_recon_by_k[k]),
+            lw=1.2,
+            label=f"synth, {k} modes removed",
+        )
+    ax_dl.set_xscale("log")
+    ax_dl.set_yscale("log")
+    ax_dl.set_xlabel(r"$\ell$")
+    ax_dl.set_ylabel(r"$D_\ell = \ell(\ell+1)C_\ell/(2\pi)$ [mK$^2$]")
+    ax_dl.grid(True, which="both", alpha=0.2)
+    ax_dl.legend(fontsize=7, loc="best")
+    fig_dl.tight_layout()
+    fig_dl.savefig(out_dir / "dl_vs_planck_ml.png", bbox_inches="tight")
+    plt.close(fig_dl)
 
     ax_rho.set_xscale("log")
     ax_rho.set_xlabel(r"$\ell$")

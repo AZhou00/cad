@@ -1,6 +1,6 @@
 # Parallel ML Solve: Theory-to-Code Mapping
 
-This note documents the current parallel pipeline implemented in:
+This note documents the ML pipeline implemented in:
 
 - `cad/analysis_parallel/run_reconstruction.py`
 - `cad/analysis_parallel/run_synthesis_full.py`
@@ -9,88 +9,70 @@ This note documents the current parallel pipeline implemented in:
 - `cad/src/cad/parallel_solve/fisher.py`
 - `cad/src/cad/parallel_solve/synthesize_scan.py`
 
-Reference exact joint (augmented) solve remains available in:
-
-- `cad/src/cad/direct_solve/reconstruct_scan.py` (single scan)
-- `cad/src/cad/direct_solve/synthesize_scan.py` (all scans)
-
-This document covers ML only (`estimator_mode="ML"`), consistent with the current parallel path.
+Goal: keep notation light, define symbols before use, and match code names directly.
 
 ---
 
-## 1) Symbols, index sets, and array conventions
+## 1) Minimal symbols and code naming
 
-### 1.1 Indices and dimensions
+For each scan `s`:
 
-- $s \in \{1,\dots,S\}$: scan index
-- $i \in \{1,\dots,n_{\mathrm{valid},s}\}$: valid TOD sample index in scan $s$
-- $p \in \{1,\dots,n_{\mathrm{pix,cmb}}\}$: CMB pixel index on the CMB bbox grid
-- $q \in \{1,\dots,n_{\mathrm{pix,atm},s}\}$: atmosphere pixel index on scan-$s$ atmosphere grid
-
-### 1.2 Core variables
-
-For each scan $s$:
-
-- $d_s \in \mathbb{R}^{n_{\mathrm{valid},s}}$: valid TOD
-- $c \in \mathbb{R}^{n_{\mathrm{pix,cmb}}}$: static sky map
-- $a_s^0 \in \mathbb{R}^{n_{\mathrm{pix,atm},s}}$: atmosphere screen at reference time
-- $P_s$: CMB pointing operator (CMB pixels $\to$ valid TOD)
-- $W_s$: frozen-flow advection/interpolation operator (atmosphere pixels $\to$ valid TOD)
-- $N_s = \mathrm{diag}(\sigma_i^2)$: diagonal TOD noise covariance
+- $d_s$: valid TOD vector (`sol.tod_valid_mk`)
+- $c$: static CMB map coefficients on the chosen pixel basis
+- $a_s^0$: atmosphere screen at scan reference time
+- $P_s$: CMB pointing operator (implemented by `pix_obs_local` binning/scatter)
+- $W_s$: atmosphere advection+interpolation operator (implemented by `idx4`, `w4`)
+- $N_s$: diagonal TOD noise covariance (`inv_var = diag(N_s^{-1})`)
 - $C_a$: atmosphere prior covariance
 
-Derived:
-
-- $\tilde N_s = N_s + W_s C_a W_s^\top$
-- $\mathrm{Cov}(\hat c_s)^{-1} = P_s^\top \tilde N_s^{-1} P_s$ (per-scan precision on observed CMB pixels)
-- $P_s^\top \tilde N_s^{-1} d_s$ (per-scan information vector; stored as `Pt_Ninv_d`)
-
-### 1.3 Flattening convention used in code
-
-For a bbox with shape $(n_x, n_y)$ and local integer coordinates $(i_x, i_y)$:
+Derived effective covariance:
 
 $$
-\mathrm{pix} = i_y + i_x n_y.
+\tilde N_s = N_s + W_s C_a W_s^\top.
 $$
 
-This convention is used consistently in:
+Main stored arrays:
 
-- layout and pointing (`obs_pix_global`, `global_to_obs`)
-- synthesis inputs/outputs
-- plotting reshapes (`img_from_vec`, `naive_2d.T.ravel()`)
+- per scan: `cov_inv = P_s^\top \tilde N_s^{-1} P_s`
+- per scan: `Pt_Ninv_d = P_s^\top \tilde N_s^{-1} d_s`
+- synthesis: `cov_inv_tot = \sum_s` remapped per-scan `cov_inv`
+- synthesis: `Pt_Ninv_d_tot = \sum_s` remapped per-scan `Pt_Ninv_d`
+- solution: `c_hat_obs` from `cov_inv_tot @ c_hat_obs = Pt_Ninv_d_tot`
 
-### 1.4 Main stored arrays
+Flattening convention used everywhere:
 
-- `obs_pix_global`: $(n_{\mathrm{obs}},)$ observed CMB pixel indices in global flat indexing
-- `global_to_obs`: $(n_{\mathrm{pix,cmb}},)$ map from global pixel to observed index or `-1`
-- `c_hat_scan_obs`: $(n_{\mathrm{obs},s},)$ per-scan point estimate
-- `cov_inv`: $(n_{\mathrm{obs},s}, n_{\mathrm{obs},s}) = \mathrm{Cov}(\hat c_s)^{-1}$
-- `Pt_Ninv_d`: $(n_{\mathrm{obs},s},) = P_s^\top \tilde N_s^{-1} d_s$
-- `c_hat_obs`: $(n_{\mathrm{obs}},)$ synthesized ML map on observed set
-- `cov_inv_tot`: $(n_{\mathrm{obs}}, n_{\mathrm{obs}})$ global precision (sum of remapped per-scan precisions)
+$$
+\texttt{pix} = i_y + i_x n_y.
+$$
+
+This is the convention behind `obs_pix_global`, `global_to_obs`, and all map reshapes.
 
 ---
 
-## 2) Per-scan model and ML equations
+## 2) Per-scan ML model and derivation
 
-For each scan $s$:
+### 2.1 Forward model and objective
+
+For one scan:
 
 $$
-d_s = P_s c + W_s a_s^0 + n_s,\qquad n_s \sim \mathcal N(0, N_s),
+d_s = P_s c + W_s a_s^0 + n_s, \qquad n_s \sim \mathcal N(0, N_s),
 $$
 $$
 a_s^0 \sim \mathcal N(0, C_a).
 $$
 
-Define the per-scan objective (negative log posterior up to constants):
+The per-scan ML objective (negative log posterior up to constants) is:
 
 $$
 \Phi_s(c,a_s^0)
-=\frac12(d_s-P_sc-W_sa_s^0)^\top N_s^{-1}(d_s-P_sc-W_sa_s^0)
-+\frac12 (a_s^0)^\top C_a^{-1} a_s^0.
+= \frac12(d_s-P_sc-W_sa_s^0)^\top N_s^{-1}(d_s-P_sc-W_sa_s^0)
++ \frac12(a_s^0)^\top C_a^{-1}a_s^0.
 $$
 
-Stationarity gives the augmented block normal equation:
+### 2.2 Block normal equation
+
+Taking derivatives w.r.t. $c$ and $a_s^0$ gives:
 
 $$
 \begin{bmatrix}
@@ -98,268 +80,325 @@ P_s^\top N_s^{-1}P_s & P_s^\top N_s^{-1}W_s \\
 W_s^\top N_s^{-1}P_s & W_s^\top N_s^{-1}W_s + C_a^{-1}
 \end{bmatrix}
 \begin{bmatrix}
-c \\ a_s^0
+c\\a_s^0
 \end{bmatrix}
 =
 \begin{bmatrix}
-P_s^\top N_s^{-1}d_s \\
+P_s^\top N_s^{-1}d_s\\
 W_s^\top N_s^{-1}d_s
 \end{bmatrix}.
 $$
 
-Eliminating $a_s^0$ (Schur complement) yields:
+To keep notation short, define:
 
 $$
-\mathrm{Cov}(\hat c_s)^{-1} c
-= P_s^\top \tilde N_s^{-1} d_s,\qquad
-\mathrm{Cov}(\hat c_s)^{-1}
-= P_s^\top \tilde N_s^{-1} P_s,
+A=P_s^\top N_s^{-1}P_s,\quad
+B=P_s^\top N_s^{-1}W_s,\quad
+D=W_s^\top N_s^{-1}W_s + C_a^{-1},
 $$
 $$
-\tilde N_s = N_s + W_s C_a W_s^\top.
-$$
-
-Hence the per-scan ML estimator is:
-
-$$
-\hat c_s
-= \left(P_s^\top \tilde N_s^{-1} P_s\right)^{-1}
-  P_s^\top \tilde N_s^{-1} d_s,
-$$
-with covariance
-$$
-\mathrm{Cov}(\hat c_s)
-= \left(P_s^\top \tilde N_s^{-1} P_s\right)^{-1}.
+b=P_s^\top N_s^{-1}d_s,\quad
+e=W_s^\top N_s^{-1}d_s.
 $$
 
-So `cov_inv` in scan artifacts is exactly $\mathrm{Cov}(\hat c_s)^{-1}$, and
-`Pt_Ninv_d` is exactly $P_s^\top \tilde N_s^{-1} d_s$.
+Then the block system is:
+
+$$
+Ac+Ba=b,\qquad B^\top c+Da=e.
+$$
+
+Eliminate $a$ via $a=D^{-1}(e-B^\top c)$:
+
+$$
+(A-BD^{-1}B^\top)c=b-BD^{-1}e.
+$$
+
+Using Woodbury identities, this is exactly:
+
+$$
+P_s^\top \tilde N_s^{-1}P_s\,c = P_s^\top \tilde N_s^{-1}d_s.
+$$
+
+Therefore:
+
+$$
+\texttt{cov\_inv} = P_s^\top \tilde N_s^{-1}P_s,\qquad
+\texttt{Pt\_Ninv\_d} = P_s^\top \tilde N_s^{-1}d_s.
+$$
+
+And per-scan estimate:
+
+$$
+\hat c_s = \texttt{cov\_inv}^{-1}\texttt{Pt\_Ninv\_d},
+$$
+
+with monopole gauge fixing in code (subtract mean on solved subspace).
 
 ---
 
-## 3) How `fisher.py` builds per-scan information exactly
+## 3) How `fisher.py` computes these objects
 
-The implementation uses Woodbury with
+`cad/src/cad/parallel_solve/fisher.py` never forms $\tilde N_s$ explicitly.
+It uses:
+
 $$
-M_s = C_a^{-1} + W_s^\top N_s^{-1}W_s,\qquad
+M_s = C_a^{-1} + W_s^\top N_s^{-1}W_s,
+$$
+$$
 \tilde N_s^{-1}
-=N_s^{-1}-N_s^{-1}W_s M_s^{-1} W_s^\top N_s^{-1}.
+=N_s^{-1}-N_s^{-1}W_s M_s^{-1}W_s^\top N_s^{-1}.
 $$
 
-For any vector $u$ on valid TOD samples:
+For any TOD vector $u$:
 
-1. Solve $M_s x = W_s^\top N_s^{-1}u$
-2. Return $\tilde N_s^{-1}u = N_s^{-1}u - N_s^{-1}W_s x$
+1. compute $r = W_s^\top N_s^{-1}u$
+2. solve $M_s x = r$
+3. return $\tilde N_s^{-1}u = N_s^{-1}u - N_s^{-1}W_sx$
 
-This gives exact actions of $\tilde N_s^{-1}$ without explicitly forming $\tilde N_s$.
-
-To build `Pt_Ninv_d`:
-
-$$
-\texttt{Pt\_Ninv\_d} = P_s^\top \tilde N_s^{-1} d_s
-$$
-via one $M_s$ solve.
-
-To build `cov_inv`:
-
-$$
-\texttt{cov\_inv}[:,j] = P_s^\top \tilde N_s^{-1}(P_s e_j),
-$$
-for each observed pixel basis vector $e_j$; in code this is batched across columns.
-
-Then solve
-$$
-\texttt{cov\_inv}\,\hat c_s = \texttt{Pt\_Ninv\_d}
-$$
-for `c_hat_scan_obs` and remove mean (gauge).
-
-Outputs per scan (`scan_XXXX_ml.npz`):
-
-- `obs_pix_global_scan`, `c_hat_scan_obs`
-- `cov_inv` ($\mathrm{Cov}(\hat c_s)^{-1}$), `Pt_Ninv_d` ($P_s^\top \tilde N_s^{-1} d_s$)
-- scan metadata (`wind_*`, `ell_atm`, `cl_atm_mk2`, etc.)
-
----
-
-## 4) Global synthesis from per-scan information
-
-### 4.1 Exact global ML equation
-
-Define global observed index space with size $n_{\mathrm{obs}}$.
-Each scan contribution is remapped from scan-local observed indices to this global observed index set (the same remap implemented by `global_to_obs` in code).
 Then:
 
+- `Pt_Ninv_d`: apply the above with $u=d_s$, then apply $P_s^\top$
+- `cov_inv[:, j]`: apply the above with $u=P_se_j$, then apply $P_s^\top$
+
+where $e_j$ is scan-local observed-pixel basis vector.
+
+### 3.1 Exact formula vs numerical implementation
+
+The algebra above is exact.  
+Numerically, the $M_s$ solves are iterative (PCG), so the realized action is accurate up to iteration budget/tolerance.
+
+---
+
+## 4) What “CG solve of \(M_s\)” means in this code
+
+### 4.1 Which CG routines are used
+
+In `cad/src/cad/parallel_solve/fisher.py`:
+
+- `_cg_single(...)`: fixed-iteration preconditioned CG for one RHS
+- `_cg_batched(...)`: fixed-iteration preconditioned CG for many RHS in parallel
+- both are JAX implementations (`jax.lax.scan`) used in production path
+- `run_one_M_s_solve_converged(...)` uses `_cg_single_converged(...)` (residual-stop variant) for benchmarking, not the main production path
+
+Production call path:
+
+- `build_scan_information(..., cg_niter=...)` sets iteration count
+- `run_reconstruction.py` sets `CG_MAXITER` and passes it through as `cg_niter`
+
+### 4.2 Brief CG sketch (self-contained)
+
+For SPD system $Ax=b$, CG builds iterates in Krylov spaces:
+
 $$
-\mathrm{Cov}(\hat c)^{-1}
-= \sum_{s=1}^S R_s^\top \mathrm{Cov}(\hat c_s)^{-1} R_s,\qquad
+\mathcal K_k(A,r_0)=\text{span}\{r_0,Ar_0,\dots,A^{k-1}r_0\},
+$$
+
+and at step $k$ picks $x_k$ that minimizes quadratic energy
+$\frac12 x^\top A x - b^\top x$ over that space.
+
+Standard recurrence (preconditioned form, $M\approx A$):
+
+1. $r_0=b-Ax_0$
+2. $z_0=M^{-1}r_0$, $p_0=z_0$
+3. iterate
+   - $\alpha_k=(r_k^\top z_k)/(p_k^\top A p_k)$
+   - $x_{k+1}=x_k+\alpha_k p_k$
+   - $r_{k+1}=r_k-\alpha_k A p_k$
+   - $z_{k+1}=M^{-1}r_{k+1}$
+   - $\beta_k=(r_{k+1}^\top z_{k+1})/(r_k^\top z_k)$
+   - $p_{k+1}=z_{k+1}+\beta_k p_k$
+
+In this code:
+
+- $A$ is $M_s$
+- preconditioner is diagonal (`diag_M`) built from approximate diagonal of $M_s$
+- stopping rule in production is **fixed iteration count**, not residual threshold
+
+### 4.3 Why this is used
+
+- avoids dense factorization of $M_s$ for each scan
+- easy to batch for many RHS when building `cov_inv` columns
+- JAX-friendly and GPU-friendly implementation
+
+---
+
+## 5) Global synthesis derivation
+
+Each scan has local observed indexing. Let $R_s$ be the remap from global observed basis to scan-local observed basis (implemented by `obs_pix_global_scan` + `global_to_obs`).
+
+Per scan:
+
+$$
+\texttt{cov\_inv}_s = P_s^\top \tilde N_s^{-1}P_s,\qquad
+\texttt{Pt\_Ninv\_d}_s = P_s^\top \tilde N_s^{-1}d_s.
+$$
+
+Global accumulation:
+
+$$
+\texttt{cov\_inv\_tot}
+= \sum_s R_s^\top \texttt{cov\_inv}_s R_s,
+$$
+$$
 \texttt{Pt\_Ninv\_d\_tot}
-= \sum_{s=1}^S R_s^\top \left(P_s^\top \tilde N_s^{-1} d_s\right).
+= \sum_s R_s^\top \texttt{Pt\_Ninv\_d}_s.
 $$
 
-Global ML map on observed pixels:
+This is the same as:
 
 $$
-\mathrm{Cov}(\hat c)^{-1}\hat c = \texttt{Pt\_Ninv\_d\_tot}.
+\left(\sum_s P_s^\top \tilde N_s^{-1}P_s\right)c
+=\sum_s P_s^\top \tilde N_s^{-1}d_s,
 $$
 
-This is exactly the marginalized all-scan ML equation:
+written in one shared observed-index basis.
 
-$$
-\left(\sum_s P_s^\top \tilde N_s^{-1} P_s\right)c
-=\sum_s P_s^\top \tilde N_s^{-1} d_s,
-$$
-expressed in the global observed-index basis.
-
-### 4.2 Good-pixel restriction and gauge
-
-Code uses:
-
-- `precision_diag_total = diag(cov_inv_tot)`
-- `good_mask = precision_diag_total > 0`
-
-Solve on good subspace $G$:
-
-$$
-\left[\mathrm{Cov}(\hat c)^{-1}\right]_{GG}\hat c_G
-= \left[\texttt{Pt\_Ninv\_d\_tot}\right]_G,\qquad
-\hat c_{\bar G}=0.
-$$
-
-Then remove monopole on solved subspace:
-
-$$
-\hat c_G \leftarrow \hat c_G - \frac{1}{|G|}\sum_{p\in G}\hat c_p.
-$$
-
-Finally embed to full bbox vector:
-
-$$
-\hat c_{\mathrm{full}}[\mathrm{obs\_pix\_global}] = \hat c,\qquad
-\hat c_{\mathrm{full}}[\text{unobserved}] = 0.
-$$
-
-### 4.3 Margined synthesis (`run_synthesis_margined.py`)
-
-Given `margin_frac = f`, define:
-
-$$
-m_x = \lfloor f n_x \rfloor,\quad
-m_y = \lfloor f n_y \rfloor,\quad
-n_x' = n_x - 2m_x,\quad
-n_y' = n_y - 2m_y.
-$$
-
-For old flat index $p$:
-
-$$
-i_x = \left\lfloor \frac{p}{n_y}\right\rfloor,\qquad
-i_y = p - i_x n_y.
-$$
-
-Keep pixels with
-$$
-m_x \le i_x < n_x-m_x,\qquad m_y \le i_y < n_y-m_y,
-$$
-and remap to inner index
-$$
-p' = (i_y-m_y) + (i_x-m_x)n_y'.
-$$
-
-All accumulation, solve, diagnostics, and uncertain-mode estimation run on this inner footprint.
+Code then solves on `good_mask` where `diag(cov_inv_tot) > 0`, sets other pixels to zero, and subtracts mean on solved subspace.
 
 ---
 
-## 5) Uncertain eigenmodes in synthesis
+## 6) Margined synthesis
 
-Let
-$$
-\texttt{cov\_inv\_good}
-= \left[\mathrm{Cov}(\hat c)^{-1}\right]_{GG}
-$$
-be the global precision on good pixels ($n_g = |G|$).
-Uncertain directions are eigenvectors with smallest eigenvalues:
+`run_synthesis_margined.py` uses `margin_frac=f` to trim each side:
 
 $$
-\texttt{cov\_inv\_good}\, v_i = \lambda_i v_i,\qquad
-0 < \lambda_1 \le \lambda_2 \le \cdots,
-$$
-$$
-\mathrm{Var}(\text{mode }i) \approx \lambda_i^{-1}.
+m_x=\lfloor fn_x\rfloor,\qquad m_y=\lfloor fn_y\rfloor.
 $$
 
-So smallest $\lambda_i$ correspond to largest posterior variance.
+Inner grid:
 
-### 5.1 Lanczos-Ritz algorithm used in code
+$$
+n_x'=n_x-2m_x,\qquad n_y'=n_y-2m_y.
+$$
 
-Inputs:
+Old flat index decode:
 
-- target modes: $k = \min(n_{\text{uncertain\_modes}}, n_g)$
-- Krylov dimension:
-  $$
-  m = \min\!\left(n_g,\ \max(k+\text{oversample},2k),\ \text{maxiter}\right),\quad m\ge k
-  $$
+$$
+i_x=\left\lfloor p/n_y\right\rfloor,\qquad i_y=p-i_xn_y.
+$$
 
-Procedure:
+Inner remap:
 
-1. Start normalized random $q_1$.
-2. Lanczos recurrence with full re-orthogonalization to build:
-   - $Q_m = [q_1,\dots,q_m] \in \mathbb R^{n_g\times m}$
-   - tridiagonal $T_m$ from $\alpha_j,\beta_j$
-3. Solve small eigenproblem:
-   $$
-   T_m y_i = \theta_i y_i
-   $$
-4. Ritz vectors:
-   $$
-   \tilde v_i = Q_m y_i
-   $$
-   keep the $k$ smallest $\theta_i$
-5. QR orthonormalize $\tilde V$, then refine with Rayleigh quotients:
-   $$
-   \lambda_i = \tilde v_i^\top \texttt{cov\_inv\_good}\,\tilde v_i
-   $$
-6. Sort ascending $\lambda_i$, store:
-   $$
-   \text{uncertain\_mode\_variances}_i = 1/\max(\lambda_i, 10^{-18}),
-   $$
-   and corresponding vectors in `uncertain_mode_vectors`.
+$$
+p'=(i_y-m_y)+(i_x-m_x)n_y'.
+$$
 
-Stored shapes:
-
-- `uncertain_mode_vectors`: $(n_g, k_{\mathrm{stored}})$
-- `uncertain_mode_variances`: $(k_{\mathrm{stored}},)$
-- `lanczos_n_modes`: requested target
-- `n_uncertain_modes_stored`: actual stored mode count
-
-These are used by plotting scripts for projection/deprojection without re-running synthesis.
+All sums, solve, diagnostics, and uncertain modes are done on the inner footprint.
 
 ---
 
-## 6) Combined NPZ outputs from synthesis
+## 7) Uncertain modes: derivation + algorithm details
 
-Single output file per synthesis run (`recon_combined_ml_full.npz` or `recon_combined_ml_margined.npz`):
+Define:
 
-- Geometry: `bbox_ix0`, `bbox_iy0`, `nx`, `ny`, `pixel_size_deg`
-- Indexing: `obs_pix_global`
-- Map estimates: `c_hat_obs`, `c_hat_full_mk`
-- Precision diagnostics: `cov_inv_tot`, `precision_diag_total`, `var_diag_total`, `zero_precision_mask`, `good_mask`
-- Provenance: `scan_metadata`, `n_scans`, `n_scans_used`, `estimator_mode`
-- Uncertain modes: `uncertain_mode_vectors`, `uncertain_mode_variances`, `lanczos_n_modes`, `n_uncertain_modes_stored`
+$$
+A_g = \texttt{cov\_inv\_good}
+=\left[\texttt{cov\_inv\_tot}\right]_{\texttt{good\_mask},\texttt{good\_mask}}.
+$$
 
-`var_diag_total` is the reciprocal of the precision diagonal where positive; it is a diagonal diagnostic, not the diagonal of $\mathrm{Cov}(\hat c)$ computed by full matrix inversion.
+Eigenproblem:
+
+$$
+A_g v_i = \lambda_i v_i,\qquad
+0<\lambda_1\le\lambda_2\le\cdots.
+$$
+
+Since covariance is approximately $A_g^{-1}$, mode variance scales as:
+
+$$
+\mathrm{Var}(v_i)\approx 1/\lambda_i.
+$$
+
+So **smallest** $\lambda_i$ are the most weakly constrained (most uncertain).
+
+### 7.1 Lanczos-Ritz in `synthesize_scan.py`
+
+Implemented in `_lanczos_smallest_modes(...)`:
+
+1. pick random normalized start vector (`seed = LANCZOS_SEED`)
+2. run Lanczos recurrence with full re-orthogonalization
+3. build tridiagonal $T_m$ from $\alpha_j,\beta_j$
+4. solve small eigensystem of $T_m$
+5. map Ritz vectors back to pixel space
+6. QR orthonormalize, compute Rayleigh quotients, sort ascending
+7. store:
+   - `uncertain_mode_vectors`
+   - `uncertain_mode_variances = 1/max(lambda, 1e-18)`
+
+### 7.2 What each hyperparameter means
+
+Used in `run_synthesis_full.py` and `run_synthesis_margined.py`:
+
+- `N_UNCERTAIN_MODES`:
+  requested number of smallest-eigenvalue modes to return (`k`)
+- `LANCZOS_OVERSAMPLE`:
+  extra Krylov dimension beyond `k` to improve Ritz accuracy
+- `LANCZOS_MAXITER`:
+  hard cap on Krylov dimension / iterations
+
+Actual Lanczos dimension in code:
+
+$$
+m = \min\!\Big(n_g,\ \max(k+\text{oversample},2k),\ \text{maxiter}\Big),\quad m\ge k.
+$$
+
+Where $n_g = \sum \texttt{good\_mask}$.
+
+Interpretation:
+
+- larger `N_UNCERTAIN_MODES`: returns more uncertain directions but costs more memory/time
+- larger `LANCZOS_OVERSAMPLE`: better eigenpair quality near the cutoff, modest extra cost
+- larger `LANCZOS_MAXITER`: allows deeper Krylov basis; useful when spectrum is clustered
 
 ---
 
-## 7) End-to-end execution order in practice
+## 8) Key reconstruction/synthesis hyperparameters in code
 
-1. Build/load layout (`layout.npz`) for each observation.
-2. Run per-scan reconstruction (`run_reconstruction.py`):
-   - solve scan model
-   - build exact `cov_inv` and `Pt_Ninv_d`
-   - write `scan_XXXX_ml.npz`
+### 8.1 Per-scan reconstruction (`run_reconstruction.py`)
+
+- `N_ELL_BINS`: bins for atmosphere power estimate used in atmosphere prior
+- `CL_FLOOR_MK2`: floor on $C_\ell$ to keep prior operators well-conditioned
+- `NOISE_MK`: raw-detector white-noise scale used to build `inv_var`
+- `CG_TOL`, `CG_MAXITER`: passed to `solve_single_scan` joint CG (`solver.py`)
+- `CG_MAXITER` also passed as `cg_niter` for fixed-iteration PCG in `fisher.py`
+
+### 8.2 Synthesis
+
+- `MARGIN_FRAC`: 0 for full solve, >0 for inner-footprint solve
+- `N_UNCERTAIN_MODES`, `LANCZOS_OVERSAMPLE`, `LANCZOS_MAXITER`: uncertain-mode settings above
+
+---
+
+## 9) Output interface
+
+Per-scan artifact (`scan_XXXX_ml.npz`):
+
+- `obs_pix_global_scan`
+- `c_hat_scan_obs`
+- `cov_inv`
+- `Pt_Ninv_d`
+- wind + atmosphere metadata (`wind_*`, `ell_atm`, `cl_atm_mk2`)
+
+Combined synthesis artifact (`recon_combined_ml_full.npz` or `recon_combined_ml_margined.npz`):
+
+- geometry: `bbox_ix0`, `bbox_iy0`, `nx`, `ny`, `pixel_size_deg`
+- indexing: `obs_pix_global`
+- map solution: `c_hat_obs`, `c_hat_full_mk`
+- precision diagnostics: `cov_inv_tot`, `precision_diag_total`, `good_mask`, `zero_precision_mask`, `var_diag_total`
+- uncertain modes: `uncertain_mode_vectors`, `uncertain_mode_variances`, `lanczos_n_modes`, `n_uncertain_modes_stored`
+- provenance: `scan_metadata`, `n_scans`, `n_scans_used`, `estimator_mode`
+
+`var_diag_total` is a diagonal proxy $1/\mathrm{diag}(\texttt{cov\_inv\_tot})$ where positive, not the diagonal of the fully inverted covariance.
+
+---
+
+## 10) Execution order
+
+1. Build layout (`build_layout.py`).
+2. Run per-scan reconstruction (`run_reconstruction.py`) to write `scan_XXXX_ml.npz`.
 3. Run synthesis:
-   - `run_synthesis_full.py`: full footprint (`margin_frac=0`)
-   - `run_synthesis_margined.py`: inner footprint (`margin_frac=0.10`)
-4. Accumulate global `cov_inv_tot` and `Pt_Ninv_d_tot`, solve for $\hat c$, compute uncertain modes, write one combined NPZ.
+   - `run_synthesis_full.py`
+   - `run_synthesis_margined.py`
+4. Optional plotting: `plot_reconstruction.py`.
 
-This decomposition is mathematically equivalent to solving the all-scan marginalized ML system directly, while enabling scan-level parallelism and artifact reuse.
+This parallel decomposition is mathematically the same marginalized ML system as direct all-scan solve, while enabling scan-level parallelism and artifact reuse.
