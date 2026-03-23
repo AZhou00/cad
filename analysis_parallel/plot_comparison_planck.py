@@ -9,7 +9,7 @@ CLI:
 
 Writes under <synthesized>/plots_margined/planck_compare/:
   cl_vs_planck_ml.png, coherence_vs_planck_ml.png, maps_planck_vs_deproj_ml.png
-Each includes naive coadd (dashed gray) for C_ell and coherence vs Planck, and a naive row in the map stack.
+Each includes naive coadd (dashed gray) for C_ell and coherence vs Planck. Map figure: Planck and synth rows share one color bar; naive coadd is last with its own scale.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import sys
 import healpy as hp
 import matplotlib.pyplot as plt
 import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from tqdm import tqdm
 
 THIS_DIR = pathlib.Path(__file__).resolve().parent
@@ -283,26 +284,36 @@ def main(synthesis_npz: pathlib.Path) -> None:
     fig_rho.savefig(out_dir / "coherence_vs_planck_ml.png", bbox_inches="tight")
     plt.close(fig_rho)
 
-    # Maps: Planck, naive coadd, then each k (margined only)
+    # Maps: Planck + synth rows share one symmetric color bar; naive coadd last with its own bar
     planck_m = np.where(common, t_planck_mk, np.nan)
-    stacks = [planck_m, naive_m] + [recons[k] for k in k_use]
-    titles = ["Planck SMICA T [mK]", "Naive coadd [mK]"] + [
-        f"Synth ML, {k} uncertain modes removed [mK]" for k in k_use
-    ]
-    nrows = len(stacks)
+    main_stacks = [planck_m] + [recons[k] for k in k_use]
+    main_titles = ["Planck SMICA T [mK]"] + [f"Synth ML, {k} uncertain modes removed [mK]" for k in k_use]
+    nrows = len(main_stacks) + 1
     fig_m, axs = plt.subplots(nrows, 1, figsize=(8.0, 2.4 * nrows), dpi=150, sharex=True, sharey=True)
-    if nrows == 1:
-        axs = [axs]
-    flat = np.concatenate([s[np.isfinite(s)] for s in stacks])
-    lo, hi = pr._robust_vmin_vmax(flat)
+    axs_list = [axs] if nrows == 1 else list(axs)
+    main_axs = axs_list[:-1]
+    naive_ax = axs_list[-1]
+
+    flat_main = np.concatenate([s[np.isfinite(s)] for s in main_stacks])
+    lo, hi = pr._robust_vmin_vmax(flat_main)
     vlim = float(max(abs(lo), abs(hi)))
     vmin, vmax = -vlim, vlim
-    ims = []
-    for ax, img, ti in zip(axs, stacks, titles):
+    ims_main = []
+    for ax, img, ti in zip(main_axs, main_stacks, main_titles):
         im = pr._imshow(ax, img, extent=extent, title=ti, vmin=vmin, vmax=vmax, cmap="RdBu_r")
-        ims.append(im)
+        ims_main.append(im)
+
+    flat_n = naive_m[np.isfinite(naive_m)]
+    lon, hin = pr._robust_vmin_vmax(flat_n)
+    vlim_n = float(max(abs(lon), abs(hin)))
+    vmin_n, vmax_n = -vlim_n, vlim_n
+    im_naive = pr._imshow(naive_ax, naive_m, extent=extent, title="Naive coadd [mK]", vmin=vmin_n, vmax=vmax_n, cmap="RdBu_r")
+
     fig_m.subplots_adjust(right=0.88, hspace=0.28)
-    pr._add_shared_colorbar(fig_m, axs, ims[-1], label="mK")
+    pr._add_shared_colorbar(fig_m, main_axs, ims_main[-1], label="mK")
+    div = make_axes_locatable(naive_ax)
+    cax_n = div.append_axes("right", size="2.8%", pad=0.12)
+    fig_m.colorbar(im_naive, cax=cax_n).set_label("mK")
     fig_m.savefig(out_dir / "maps_planck_vs_deproj_ml.png", bbox_inches="tight")
     plt.close(fig_m)
     pbar.update(1)
