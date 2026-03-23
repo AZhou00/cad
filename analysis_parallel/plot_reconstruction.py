@@ -47,10 +47,18 @@ if str(CAD_DIR / "src") not in sys.path:
 from cad import map as map_util
 from cad import power
 from cad.parallel_solve.artifact_io import assert_synthesis_npz_keys, load_scan_artifact
-from cad.plot_util import deproject_uncertain_modes, img_from_vec
+from cad.plot_util import (
+    add_shared_colorbar,
+    binned_tod_paths,
+    deproject_uncertain_modes,
+    extent_deg_from_bbox,
+    img_from_vec,
+    imshow_ra_dec_map,
+    naive_coadd,
+    robust_vmin_vmax,
+)
 
 N_ELL_BINS = 128
-BINNED_TOD_SUBDIR = "binned_tod_10arcmin"
 TOP_N_SCANS = 5
 PRECISION_CBAR_MIN = 1e-4
 
@@ -72,86 +80,26 @@ def _plots_branch_from_synthesis_name(filename: str) -> str:
     )
 
 
-def _extent_deg(*, bbox: map_util.BBox, pixel_size_deg: float) -> list[float]:
-    x0 = float(bbox.ix0) * float(pixel_size_deg)
-    x1 = float(bbox.ix0 + bbox.nx) * float(pixel_size_deg)
-    y0 = float(bbox.iy0) * float(pixel_size_deg)
-    y1 = float(bbox.iy0 + bbox.ny) * float(pixel_size_deg)
-    return [x0, x1, y0, y1]
+def _scan_ml_npz_paths_for_plots(out_dir: pathlib.Path, scan_metadata: list[dict]) -> list[pathlib.Path]:
+    """
+    Paths to per-scan scan_*_ml.npz for optional overlays.
 
-
-def _robust_vmin_vmax(x: np.ndarray, *, p_lo: float = 2.0, p_hi: float = 98.0, default=(-1.0, 1.0)) -> tuple[float, float]:
-    v = np.asarray(x, dtype=np.float64).ravel()
-    v = v[np.isfinite(v)]
-    if v.size == 0:
-        return float(default[0]), float(default[1])
-    lo, hi = np.percentile(v, [float(p_lo), float(p_hi)])
-    return float(lo), float(hi)
-
-
-def _imshow(ax, img, *, extent, title: str, vmin=None, vmax=None, cmap="RdBu_r"):
-    img = np.ma.masked_invalid(np.asarray(img))
-    cm = plt.get_cmap(cmap).copy()
-    cm.set_bad(color=(1.0, 1.0, 1.0, 1.0))
-    ax.set_facecolor("white")
-    im = ax.imshow(img, origin="lower", extent=extent, aspect="auto", cmap=cm, vmin=vmin, vmax=vmax, interpolation="none")
-    ax.set_title(title, fontsize=10)
-    ax.set_xlabel("RA [deg]")
-    ax.set_ylabel("Dec [deg]")
-    return im
-
-
-def _add_shared_colorbar(
-    fig,
-    axes,
-    im,
-    *,
-    label: str,
-    pad: float = 0.012,
-    width: float = 0.018,
-) -> None:
-    """One colorbar aligned to span all provided axes."""
-    axs = [ax for ax in np.asarray(axes).reshape(-1) if ax.get_visible()]
-    if not axs:
-        return
-    boxes = [ax.get_position() for ax in axs]
-    x1 = max(b.x1 for b in boxes)
-    y0 = min(b.y0 for b in boxes)
-    y1 = max(b.y1 for b in boxes)
-    cax = fig.add_axes([x1 + pad, y0, width, y1 - y0])
-    fig.colorbar(im, cax=cax, orientation="vertical").set_label(label)
-
-
-def _binned_tod_paths(obs_data_dir: pathlib.Path) -> list[pathlib.Path]:
-    chosen = obs_data_dir / BINNED_TOD_SUBDIR
-    if not chosen.is_dir():
-        return []
-    return sorted([p for p in chosen.iterdir() if p.is_file() and p.suffix == ".npz" and not p.name.startswith(".")])
-
-
-def _naive_coadd(scan_paths: list[pathlib.Path], bbox: map_util.BBox) -> tuple[np.ndarray, np.ndarray]:
-    s = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
-    c = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
-    for p in scan_paths:
-        with np.load(p, allow_pickle=False) as z:
-            eff_tod_mk = np.asarray(z["eff_tod_mk"])
-            pix_index = np.asarray(z["pix_index"], dtype=np.int64)
-        ok = np.isfinite(eff_tod_mk)
-        if not np.any(ok):
-            continue
-        ij = pix_index[ok]
-        ixg = ij[:, 0] - int(bbox.ix0)
-        iyg = ij[:, 1] - int(bbox.iy0)
-        in_box = (ixg >= 0) & (ixg < int(bbox.nx)) & (iyg >= 0) & (iyg < int(bbox.ny))
-        if not np.any(in_box):
-            continue
-        v = eff_tod_mk[ok].astype(np.float64, copy=False)[in_box]
-        np.add.at(s, (iyg[in_box], ixg[in_box]), v)
-        np.add.at(c, (iyg[in_box], ixg[in_box]), 1)
-    naive = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
-    hit = c > 0
-    naive[hit] = (s[hit] / c[hit]).astype(np.float32)
-    return naive, hit
+    Uses out_dir/scans when present (single-obs synthesis). For synthesis under field_id/synthesized/,
+    resolves field_id/<observation_id>/scans/scan_{idx:04d}_ml.npz from scan_metadata (same layout as
+    reconstruction output on scratch).
+    """
+    local = out_dir / "scans"
+    if local.is_dir():
+        return sorted(local.glob("scan_*_ml.npz"), key=_scan_npz_sort_key)
+    paths: list[pathlib.Path] = []
+    field_root = out_dir.parent
+    for m in scan_metadata:
+        oid = str(m["observation_id"])
+        idx = int(m["scan_index"])
+        p = field_root / oid / "scans" / f"scan_{idx:04d}_ml.npz"
+        if p.is_file():
+            paths.append(p)
+    return paths
 
 
 def _naive_coadd_one_scan(scan_path: pathlib.Path, bbox: map_util.BBox) -> np.ndarray:
@@ -217,10 +165,10 @@ def plot_naive_vs_combined_maps(
     """
     n = 2
     fig, axs = plt.subplots(n, 1, figsize=(9.0, 2.3 * n), dpi=150, sharex=True, sharey=True)
-    ims = [_imshow(axs[0], naive, extent=extent, title="Naive coadd [mK]", vmin=vmin, vmax=vmax),
-           _imshow(axs[1], rec_masked, extent=extent, title="Recon combined (ML) [mK]", vmin=vmin, vmax=vmax)]
+    ims = [imshow_ra_dec_map(axs[0], naive, extent=extent, title="Naive coadd [mK]", vmin=vmin, vmax=vmax),
+           imshow_ra_dec_map(axs[1], rec_masked, extent=extent, title="Recon combined (ML) [mK]", vmin=vmin, vmax=vmax)]
     fig.subplots_adjust(right=0.88, hspace=0.25)
-    _add_shared_colorbar(fig, axs, ims[-1], label="mK")
+    add_shared_colorbar(fig, axs, ims[-1], label="mK")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -339,11 +287,11 @@ def plot_single_scan_naive_vs_point(
         axs = axs.reshape(1, -1)
     im_last = None
     for i in range(n_rows):
-        _imshow(axs[i, 0], naive_per_scan[i], extent=extent, title=f"Scan {i}: naive coadd [mK]", vmin=vmin, vmax=vmax)
+        imshow_ra_dec_map(axs[i, 0], naive_per_scan[i], extent=extent, title=f"Scan {i}: naive coadd [mK]", vmin=vmin, vmax=vmax)
         right_title = f"Scan {i}: point estimate [mK]"
         if wind_per_scan is not None and i < len(wind_per_scan):
             right_title += _wind_title(wind_per_scan[i][0], wind_per_scan[i][1])
-        im_last = _imshow(axs[i, 1], rec_per_scan[i], extent=extent, title=right_title, vmin=vmin, vmax=vmax)
+        im_last = imshow_ra_dec_map(axs[i, 1], rec_per_scan[i], extent=extent, title=right_title, vmin=vmin, vmax=vmax)
     fig.subplots_adjust(right=0.88, hspace=0.3, wspace=0.15)
     pos = axs[-1, -1].get_position()
     cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.015, pos.height])
@@ -472,13 +420,13 @@ def plot_uncertain_eigenmode_maps(
     shown_axes = []
     for i, ax in enumerate(axes_flat):
         if i < k_show:
-            im = _imshow(ax, maps_2d[i], extent=extent, title=f"mode {i} (most uncertain first)", vmin=vmin, vmax=vmax)
+            im = imshow_ra_dec_map(ax, maps_2d[i], extent=extent, title=f"mode {i} (most uncertain first)", vmin=vmin, vmax=vmax)
             shown_axes.append(ax)
         else:
             ax.set_visible(False)
     fig.subplots_adjust(right=0.9, wspace=0.18, hspace=0.28)
     if im is not None:
-        _add_shared_colorbar(fig, shown_axes, im, label="a.u.", pad=0.01, width=0.015)
+        add_shared_colorbar(fig, shown_axes, im, label="a.u.", pad=0.01, width=0.015)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -545,14 +493,14 @@ def plot_eigenmode_removed_maps(
     rec_full[obs_pix_global] = rec_filt
     coadd_2d = img_from_vec(coadd_full, nx=nx, ny=ny)
     rec_2d_filt = img_from_vec(rec_full, nx=nx, ny=ny)
-    vmin, vmax = _robust_vmin_vmax(np.concatenate([coadd_2d.ravel(), rec_2d_filt.ravel()]))
+    vmin, vmax = robust_vmin_vmax(np.concatenate([coadd_2d.ravel(), rec_2d_filt.ravel()]))
     rec_masked = np.where(hit_mask & np.isfinite(rec_2d_filt), rec_2d_filt, np.nan).astype(np.float32)
     coadd_masked = np.where(hit_mask & np.isfinite(coadd_2d), coadd_2d, np.nan).astype(np.float32)
     fig, axs = plt.subplots(2, 1, figsize=(9.0, 4.6), dpi=150, sharex=True, sharey=True)
-    _imshow(axs[0], coadd_masked, extent=extent, title="Coadd (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
-    im = _imshow(axs[1], rec_masked, extent=extent, title="Synthesized (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
+    imshow_ra_dec_map(axs[0], coadd_masked, extent=extent, title="Coadd (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
+    im = imshow_ra_dec_map(axs[1], rec_masked, extent=extent, title="Synthesized (unconstrained modes set to 0) [mK]", vmin=vmin, vmax=vmax)
     fig.subplots_adjust(right=0.88, hspace=0.25)
-    _add_shared_colorbar(fig, axs, im, label="mK")
+    add_shared_colorbar(fig, axs, im, label="mK")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -682,7 +630,9 @@ def main(
     obs_pix_global (n_obs,), cov_inv_tot (n_obs, n_obs), good_mask (n_obs,), uncertain_mode_vectors (n_good, k),
     scan_metadata (list of dicts). out_dir = synthesis_npz.parent; field_id = synthesis_npz.parent.parent.name.
     If n_modes is set, uncertain_mode_vectors[:, :n_modes] and variances[:n_modes] are used for uncertain-mode plots.
-    Observation ids for binned TOD from scan_metadata; scan_dir = out_dir/scans if present.
+    Observation ids for binned TOD from scan_metadata.
+    Per-scan plots use scan_*_ml.npz from out_dir/scans when present, else field_id/<obs_id>/scans/ via scan_metadata
+    (so multi-obs synthesis under .../synthesized/ still finds per-scan artifacts on the same filesystem).
     Writes to out_dir/plots_full/<K>/ or out_dir/plots_margined/<K>/ (branch from npz filename; K = columns after slicing).
     """
     combined_npz = pathlib.Path(synthesis_npz).resolve()
@@ -690,8 +640,6 @@ def main(
         raise FileNotFoundError(f"Combined recon not found: {combined_npz}. Run run_synthesis_full.py or run_synthesis_margined.py first.")
     out_dir = combined_npz.parent
     field_id = combined_npz.parent.parent.name
-    scan_dir = out_dir / "scans"
-    scan_dir = scan_dir if scan_dir.is_dir() else None
 
     with np.load(combined_npz, allow_pickle=True) as rc:
         assert_synthesis_npz_keys(rc)
@@ -709,6 +657,8 @@ def main(
         uncertain_variances = np.asarray(rc["uncertain_mode_variances"], dtype=np.float64) if "uncertain_mode_variances" in rc else np.empty((0,), dtype=np.float64)
         scan_metadata = rc["scan_metadata"].tolist() if "scan_metadata" in rc else []
 
+    scan_ml_npz_paths = _scan_ml_npz_paths_for_plots(out_dir, scan_metadata)
+
     if n_modes is not None and uncertain_vectors.size > 0:
         k = min(int(n_modes), uncertain_vectors.shape[1])
         uncertain_vectors = uncertain_vectors[:, :k]
@@ -723,19 +673,19 @@ def main(
     obs_data_dirs = [DATA_DIR / field_id / oid for oid in obs_ids_from_meta]
 
     bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
-    extent = _extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
+    extent = extent_deg_from_bbox(bbox=bbox, pixel_size_deg=pixel_size_deg)
     pixel_res_rad = pixel_size_deg * np.pi / 180.0
     rec = img_from_vec(rec_full, nx=nx, ny=ny)
 
     tod_paths: list[pathlib.Path] = []
     for d in obs_data_dirs:
-        tod_paths.extend(_binned_tod_paths(d))
-    naive, hit_mask = _naive_coadd(tod_paths, bbox) if tod_paths else (np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32), np.zeros((int(bbox.ny), int(bbox.nx)), dtype=bool))
+        tod_paths.extend(binned_tod_paths(d))
+    naive, hit_mask = naive_coadd(tod_paths, bbox) if tod_paths else (np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32), np.zeros((int(bbox.ny), int(bbox.nx)), dtype=bool))
     if not np.any(hit_mask) and tod_paths:
         hit_mask = np.isfinite(naive)
     rec_masked = np.where(hit_mask & np.isfinite(rec), rec, np.nan).astype(np.float32, copy=False)
 
-    vmin, vmax = _robust_vmin_vmax(np.concatenate([naive.ravel(), rec_masked.ravel()]))
+    vmin, vmax = robust_vmin_vmax(np.concatenate([naive.ravel(), rec_masked.ravel()]))
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     plot_naive_vs_combined_maps(plots_dir / "maps_naive_vs_combined_ml.png", naive, rec_masked, extent, vmin, vmax)
@@ -750,8 +700,8 @@ def main(
         plot_cl_distribution(plots_dir / "cl_atm_distribution_ml.png", scan_metadata)
         plot_wind_scatter(plots_dir / "wind_scatter_ml.png", scan_metadata)
 
-    if scan_dir is not None:
-        scan_npzs = sorted(scan_dir.glob("scan_*_ml.npz"), key=_scan_npz_sort_key)[:TOP_N_SCANS]
+    if scan_ml_npz_paths:
+        scan_npzs = scan_ml_npz_paths[:TOP_N_SCANS]
         if scan_npzs and len(tod_paths) >= len(scan_npzs):
             naive_per_scan = [_naive_coadd_one_scan(tod_paths[i], bbox) for i in range(len(scan_npzs))]
             rec_per_scan = []
@@ -762,10 +712,10 @@ def main(
                 art = load_scan_artifact(p)
                 w = art["wind_deg_per_s"]
                 wind_per_scan.append((float(w[0]), float(w[1])))
-            vmin_s, vmax_s = _robust_vmin_vmax(np.concatenate([x.ravel() for x in naive_per_scan + rec_per_scan]))
+            vmin_s, vmax_s = robust_vmin_vmax(np.concatenate([x.ravel() for x in naive_per_scan + rec_per_scan]))
             plot_single_scan_naive_vs_point(plots_dir / "maps_single_scan_naive_vs_point_ml.png", naive_per_scan, rec_per_scan, extent, vmin_s, vmax_s, wind_per_scan=wind_per_scan)
 
-        cov_npzs = sorted(scan_dir.glob("scan_*_ml.npz"), key=_scan_npz_sort_key)[:2]
+        cov_npzs = scan_ml_npz_paths[:2]
         if len(cov_npzs) >= 2:
             art0 = load_scan_artifact(cov_npzs[0])
             art1 = load_scan_artifact(cov_npzs[1])

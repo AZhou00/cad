@@ -36,16 +36,21 @@ N_ELL_BINS = 48
 
 if str(CAD_DIR / "src") not in sys.path:
     sys.path.insert(0, str(CAD_DIR / "src"))
-if str(THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(THIS_DIR))
 
 from cad import map as map_util
 from cad import power
 from cad.parallel_solve.artifact_io import assert_synthesis_npz_keys
 from cad.planck import PlanckMapLoader
-from cad.plot_util import deproject_uncertain_modes, img_from_vec
-
-import plot_reconstruction as pr
+from cad.plot_util import (
+    add_shared_colorbar,
+    binned_tod_paths,
+    deproject_uncertain_modes,
+    extent_deg_from_bbox,
+    img_from_vec,
+    imshow_ra_dec_map,
+    naive_coadd,
+    robust_vmin_vmax,
+)
 
 
 def _recon_deproj_2d(
@@ -182,13 +187,13 @@ def main(synthesis_npz: pathlib.Path) -> None:
     obs_ids = list(dict.fromkeys(m["observation_id"] for m in scan_metadata)) if scan_metadata else []
     tod_paths: list[pathlib.Path] = []
     for oid in obs_ids:
-        tod_paths.extend(pr._binned_tod_paths(DATA_DIR / field_id / oid))
+        tod_paths.extend(binned_tod_paths(DATA_DIR / field_id / oid))
 
     bbox = map_util.BBox(ix0=bbox_ix0, ix1=bbox_ix0 + nx - 1, iy0=bbox_iy0, iy1=bbox_iy0 + ny - 1)
-    extent = pr._extent_deg(bbox=bbox, pixel_size_deg=pixel_size_deg)
+    extent = extent_deg_from_bbox(bbox=bbox, pixel_size_deg=pixel_size_deg)
     pixel_res_rad = pixel_size_deg * np.pi / 180.0
 
-    naive, hit_mask = pr._naive_coadd(tod_paths, bbox) if tod_paths else (
+    naive, hit_mask = naive_coadd(tod_paths, bbox) if tod_paths else (
         np.full((ny, nx), np.nan, dtype=np.float32),
         np.zeros((ny, nx), dtype=bool),
     )
@@ -299,22 +304,22 @@ def main(synthesis_npz: pathlib.Path) -> None:
     naive_ax = axs_list[-1]
 
     flat_main = np.concatenate([s[np.isfinite(s)] for s in main_stacks])
-    lo, hi = pr._robust_vmin_vmax(flat_main)
+    lo, hi = robust_vmin_vmax(flat_main)
     vlim = float(max(abs(lo), abs(hi)))
     vmin, vmax = -vlim, vlim
     ims_main = []
     for ax, img, ti in zip(main_axs, main_stacks, main_titles):
-        im = pr._imshow(ax, img, extent=extent, title=ti, vmin=vmin, vmax=vmax, cmap="RdBu_r")
+        im = imshow_ra_dec_map(ax, img, extent=extent, title=ti, vmin=vmin, vmax=vmax, cmap="RdBu_r")
         ims_main.append(im)
 
     flat_n = naive_m[np.isfinite(naive_m)]
-    lon, hin = pr._robust_vmin_vmax(flat_n)
+    lon, hin = robust_vmin_vmax(flat_n)
     vlim_n = float(max(abs(lon), abs(hin)))
     vmin_n, vmax_n = -vlim_n, vlim_n
-    im_naive = pr._imshow(naive_ax, naive_m, extent=extent, title="Naive coadd [mK]", vmin=vmin_n, vmax=vmax_n, cmap="RdBu_r")
+    im_naive = imshow_ra_dec_map(naive_ax, naive_m, extent=extent, title="Naive coadd [mK]", vmin=vmin_n, vmax=vmax_n, cmap="RdBu_r")
 
     fig_m.subplots_adjust(right=0.88, hspace=0.28)
-    pr._add_shared_colorbar(fig_m, main_axs, ims_main[-1], label="mK")
+    add_shared_colorbar(fig_m, main_axs, ims_main[-1], label="mK")
     div = make_axes_locatable(naive_ax)
     cax_n = div.append_axes("right", size="2.8%", pad=0.12)
     fig_m.colorbar(im_naive, cax=cax_n).set_label("mK")
