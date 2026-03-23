@@ -2,13 +2,15 @@
 """
 Plot combined and per-scan reconstructions (parallel path output).
 
-Input: path to synthesis npz (recon_combined_ml_full.npz or recon_combined_ml_margined.npz). Path is normally under OUT_BASE, e.g.
-  OUT_BASE/field_id/observation_id/recon_combined_ml_full.npz or OUT_BASE/field_id/synthesized/recon_combined_ml_margined.npz.
+Input: path to a synthesis npz (always named like recon_combined_ml_*_<k>modes.npz from run_synthesis_*).
+  Pass this path on the CLI (no default). Example: .../field_id/synthesized/recon_combined_ml_margined_200modes.npz.
   field_id is inferred as path.parent.parent.name for binned TOD lookup (DATA_DIR/field_id/<obs_id>/).
   Optional: out_dir/scans/scan_*_ml.npz for per-scan map/precision plots; binned TOD from scan_metadata obs ids.
-Output: out_dir/<plots_subdir>/ with out_dir = path.parent.
+Output: out_dir/plots_full/<K>/ or out_dir/plots_margined/<K>/ with out_dir = path.parent (synthesized/), K = effective
+  uncertain-mode count after optional slicing (modes removed in deprojection plots). Branch is inferred from the npz name
+  (recon_combined_ml_full_* vs recon_combined_ml_margined_*).
 
-Synthesis npz (recon_combined_ml_full.npz / recon_combined_ml_margined.npz) structure:
+Synthesis npz structure:
   - bbox_ix0, bbox_iy0, nx, ny, pixel_size_deg: scalars
   - c_hat_full_mk: (n_pix,) ML map on full CMB grid [mK]
   - c_hat_obs: (n_obs,) ML map on observed pixels
@@ -26,10 +28,26 @@ Output plots (each function docstring lists I/O shapes):
   maps_single_scan_naive_vs_point_ml, pixel_precision_scan0_scan1_ml,
   uncertain_eigenvalues_ml, uncertain_eigenmode_maps_ml, maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
 
-Usage:
-  python plot_reconstruction.py <path_to_recon_combined_ml_*.npz>
-  Path should be under OUT_BASE (e.g. .../field_id/observation_id/recon_combined_ml_full.npz). Observation ids
-  for binned TOD are read from scan_metadata; per-scan plots use out_dir/scans/ when that dir exists.
+CLI (synthesis npz path is required):
+  python plot_reconstruction.py /path/to/recon_combined_ml_margined_200modes.npz
+  python plot_reconstruction.py /path/to/recon_combined_ml_margined_200modes.npz 50
+
+Example:
+cd /global/homes/j/junzhez/cmb-atmosphere/cad/analysis_parallel
+for f in /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/synthesized/recon_combined_ml_margined_*modes.npz; do
+  python plot_reconstruction.py "$f"
+done
+
+
+cd /global/homes/j/junzhez/cmb-atmosphere/cad/analysis_parallel
+for f in /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/synthesized/recon_combined_ml_full_*modes.npz; do
+  python plot_reconstruction.py "$f"
+done
+
+Second arg n_modes: optional; use only the first n_modes uncertain eigenmodes for eigenvalue / eigenmode / deprojection plots.
+Output directory is <npz_parent>/plots_full/<K>/ or .../plots_margined/<K>/ (K = modes used/removed after slicing).
+
+Observation ids for binned TOD come from scan_metadata; per-scan plots use out_dir/scans/ when present.
 """
 
 from __future__ import annotations
@@ -45,7 +63,6 @@ from matplotlib import colors
 THIS_DIR = pathlib.Path(__file__).resolve().parent
 CAD_DIR = THIS_DIR.parent
 DATA_DIR = CAD_DIR / "data"
-OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 
 if str(CAD_DIR / "src") not in sys.path:
     sys.path.insert(0, str(CAD_DIR / "src"))
@@ -54,24 +71,27 @@ from cad import map as map_util
 from cad import power
 from cad.parallel_solve.artifact_io import load_scan_artifact
 
-# Toggle which synthesis output to plot by default (when no CLI path is given).
-# - "full": uses recon_combined_ml_full.npz and writes plots_full/
-# - "margined": uses recon_combined_ml_margined.npz and writes plots_margined/
-PLOT_DATA_VARIANT = "margined"
-if PLOT_DATA_VARIANT == "full":
-    DEFAULT_SYNTHESIS_FILENAME = "recon_combined_ml_full.npz"
-    DEFAULT_PLOTS_SUBDIR = "plots_full"
-elif PLOT_DATA_VARIANT == "margined":
-    DEFAULT_SYNTHESIS_FILENAME = "recon_combined_ml_margined.npz"
-    DEFAULT_PLOTS_SUBDIR = "plots_margined"
-else:
-    raise ValueError(f"Unsupported PLOT_DATA_VARIANT={PLOT_DATA_VARIANT}")
-
-DEFAULT_SYNTHESIS_NPZ = OUT_BASE / "ra0hdec-59.75" / "synthesized" / DEFAULT_SYNTHESIS_FILENAME
 N_ELL_BINS = 128
 BINNED_TOD_SUBDIR = "binned_tod_10arcmin"
 TOP_N_SCANS = 5
 PRECISION_CBAR_MIN = 1e-4
+
+
+def _plots_branch_from_synthesis_name(filename: str) -> str:
+    """
+    Return 'plots_full' or 'plots_margined' from parallel synthesis filenames.
+
+    Expected stems: recon_combined_ml_full_<k>modes, recon_combined_ml_margined_<k>modes.
+    """
+    stem = pathlib.Path(filename).stem
+    if "_margined_" in stem or stem.startswith("recon_combined_ml_margined"):
+        return "plots_margined"
+    if "_full_" in stem or stem.startswith("recon_combined_ml_full"):
+        return "plots_full"
+    raise ValueError(
+        f"Cannot infer plots_full vs plots_margined from filename {filename!r}; "
+        "expected stem like recon_combined_ml_full_<k>modes or recon_combined_ml_margined_<k>modes."
+    )
 
 
 def _img_from_vec(vec: np.ndarray, *, nx: int, ny: int) -> np.ndarray:
@@ -696,25 +716,28 @@ def plot_wind_scatter(
     plt.close(fig)
 
 
-def main(synthesis_npz: pathlib.Path, plots_subdir: str = DEFAULT_PLOTS_SUBDIR) -> None:
+def main(
+    synthesis_npz: pathlib.Path,
+    n_modes: int | None = None,
+) -> None:
     """
     Load synthesis npz, optional scan npzs and binned TOD; write all plots.
 
     Reads from synthesis_npz: bbox_*, nx, ny, pixel_size_deg, c_hat_full_mk (n_pix,), c_hat_obs (n_obs,),
     obs_pix_global (n_obs,), cov_inv_tot (n_obs, n_obs), good_mask (n_obs,), uncertain_mode_vectors (n_good, k),
     scan_metadata (list of dicts). out_dir = synthesis_npz.parent; field_id = synthesis_npz.parent.parent.name.
+    If n_modes is set, uncertain_mode_vectors[:, :n_modes] and variances[:n_modes] are used for uncertain-mode plots.
     Observation ids for binned TOD from scan_metadata; scan_dir = out_dir/scans if present.
-    Writes to out_dir/<plots_subdir>/ (e.g., plots_full or plots_margined).
+    Writes to out_dir/plots_full/<K>/ or out_dir/plots_margined/<K>/ (branch from npz filename; K = columns after slicing).
     """
     combined_npz = pathlib.Path(synthesis_npz).resolve()
     if not combined_npz.exists():
-        raise FileNotFoundError(f"Combined recon not found: {combined_npz}. Run run_synthesis.py first.")
+        raise FileNotFoundError(f"Combined recon not found: {combined_npz}. Run run_synthesis_full.py or run_synthesis_margined.py first.")
     out_dir = combined_npz.parent
     field_id = combined_npz.parent.parent.name
     scan_dir = out_dir / "scans"
     scan_dir = scan_dir if scan_dir.is_dir() else None
 
-    plots_dir = out_dir / plots_subdir
     with np.load(combined_npz, allow_pickle=True) as rc:
         bbox_ix0 = int(rc["bbox_ix0"])
         bbox_iy0 = int(rc["bbox_iy0"])
@@ -729,6 +752,16 @@ def main(synthesis_npz: pathlib.Path, plots_subdir: str = DEFAULT_PLOTS_SUBDIR) 
         uncertain_vectors = np.asarray(rc["uncertain_mode_vectors"], dtype=np.float64)
         uncertain_variances = np.asarray(rc["uncertain_mode_variances"], dtype=np.float64) if "uncertain_mode_variances" in rc else np.empty((0,), dtype=np.float64)
         scan_metadata = rc["scan_metadata"].tolist() if "scan_metadata" in rc else []
+
+    if n_modes is not None and uncertain_vectors.size > 0:
+        k = min(int(n_modes), uncertain_vectors.shape[1])
+        uncertain_vectors = uncertain_vectors[:, :k]
+        if uncertain_variances.size > k:
+            uncertain_variances = uncertain_variances[:k]
+
+    k_eff = int(uncertain_vectors.shape[1]) if uncertain_vectors.size else 0
+    plots_branch = _plots_branch_from_synthesis_name(combined_npz.name)
+    plots_dir = out_dir / plots_branch / str(k_eff)
 
     obs_ids_from_meta = list(dict.fromkeys(m["observation_id"] for m in scan_metadata))
     obs_data_dirs = [DATA_DIR / field_id / oid for oid in obs_ids_from_meta]
@@ -828,5 +861,13 @@ def main(synthesis_npz: pathlib.Path, plots_subdir: str = DEFAULT_PLOTS_SUBDIR) 
 
 
 if __name__ == "__main__":
-    synthesis_npz = pathlib.Path(sys.argv[1]) if len(sys.argv) >= 2 else DEFAULT_SYNTHESIS_NPZ
-    main(synthesis_npz=synthesis_npz, plots_subdir=DEFAULT_PLOTS_SUBDIR)
+    argv = sys.argv[1:]
+    if len(argv) < 1:
+        print(
+            "Usage: python plot_reconstruction.py <synthesis_npz> [n_modes]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    synthesis_npz = pathlib.Path(argv[0])
+    n_modes_arg = int(argv[1]) if len(argv) >= 2 else None
+    main(synthesis_npz, n_modes=n_modes_arg)

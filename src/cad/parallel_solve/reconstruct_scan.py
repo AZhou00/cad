@@ -20,10 +20,9 @@ from cad.map import BBox
 from cad import power
 from cad import util
 
-from .artifact_io import load_scan_artifact
 from .fisher import build_scan_information
 from .layout import GlobalLayout
-from .linear_solve import solve_single_scan
+from .solver import solve_single_scan
 
 
 def run_one_scan(

@@ -22,13 +22,8 @@ Input (per observation)
 
 Output tree
 -----------
-  Single observation (one obs_id):
-    OUT_BASE / FIELD_ID / <obs_id> / recon_combined_ml_full.npz
-
-  Multiple observations (comma-separated obs_ids):
-    OUT_BASE / FIELD_ID / synthesized / recon_combined_ml_full.npz
-
-  Both paths write a single npz with the same structure (c_hat_*, cov_inv_tot, scan_metadata, etc.).
+  One file per entry in UNCERTAIN_MODE_VARIANTS, e.g. recon_combined_ml_full_4096modes.npz under
+  OUT_BASE/FIELD_ID/<obs_id>/ or .../synthesized/ for multi-obs. Same schema in each file; uncertain_mode_* truncated to k.
   scan_metadata is a list of per-scan dicts (observation_id, scan_index, wind_deg_per_s, wind_sigma_*, ell_atm, cl_atm_mk2).
 """
 
@@ -51,13 +46,10 @@ OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
 OUT_SUBDIR_MULTI = "synthesized"
 OUT_FILENAME = "recon_combined_ml_full.npz"
 MARGIN_FRAC = 0.0
-N_UNCERTAIN_MODES = 4096
+UNCERTAIN_MODE_VARIANTS = [512, 1024, 4096]
 LANCZOS_OVERSAMPLE = 256
 LANCZOS_MAXITER = 8192
-# Heuristic for fixed k eigenmodes:
-#   1) choose n_uncertain_modes = k,
-#   2) choose lanczos_maxiter >= 2*k (otherwise Ritz space is truncated),
-#   3) choose lanczos_oversample ~ k/16 to k/4 for better separation near the cutoff.
+# Heuristic: Lanczos rank = max(UNCERTAIN_MODE_VARIANTS); lanczos_maxiter >= 2*max(k); oversample ~ max(k)/16..max(k)/4.
 
 
 def main() -> None:
@@ -74,7 +66,7 @@ def main() -> None:
             layout,
             scan_dir,
             out_path,
-            n_uncertain_modes=N_UNCERTAIN_MODES,
+            uncertain_mode_variants=UNCERTAIN_MODE_VARIANTS,
             lanczos_oversample=LANCZOS_OVERSAMPLE,
             lanczos_maxiter=LANCZOS_MAXITER,
             observation_id=obs_id,
@@ -85,7 +77,7 @@ def main() -> None:
             OUT_BASE,
             FIELD_ID,
             observation_ids,
-            n_uncertain_modes=N_UNCERTAIN_MODES,
+            uncertain_mode_variants=UNCERTAIN_MODE_VARIANTS,
             lanczos_oversample=LANCZOS_OVERSAMPLE,
             lanczos_maxiter=LANCZOS_MAXITER,
             out_subdir=OUT_SUBDIR_MULTI,

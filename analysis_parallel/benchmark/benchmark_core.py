@@ -195,7 +195,7 @@ def main() -> None:
                 layout_synth,
                 RECONSTRUCTED_DIR,
                 out_npz,
-                n_uncertain_modes=256,
+                uncertain_mode_variants=[256],
                 lanczos_oversample=32,
                 lanczos_maxiter=512,
                 timings=td,
@@ -217,8 +217,8 @@ def main() -> None:
             "   Solve is O(n_obs^3); for large n_obs synthesis is dominated by solve and I/O.",
             "",
         ])
-        if out_npz.exists():
-            out_npz.unlink(missing_ok=True)
+        for p in OUT_DIR.glob("benchmark_synthesis_out_*modes.npz"):
+            p.unlink(missing_ok=True)
 
     out_path = OUT_DIR / "benchmark_results.txt"
     out_path.write_text("\n".join(lines))

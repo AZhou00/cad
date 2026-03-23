@@ -14,7 +14,7 @@ Usage:
 Example (from scratch for cad/data/ra0hdec-59.75/101706388):
   python cad/analysis_parallel/run_reconstruction.py ra0hdec-59.75 101706388
 
-If args omitted, uses FIELD_ID and OBSERVATION_ID below. After all scans: python run_synthesis.py (paths in that script must match).
+If args omitted, uses FIELD_ID and OBSERVATION_ID below. After all scans: run_synthesis_full.py or run_synthesis_margined.py (paths in those scripts must match OUT_BASE).
 """
 
 from __future__ import annotations

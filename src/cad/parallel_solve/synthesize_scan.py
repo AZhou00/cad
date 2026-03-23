@@ -124,6 +124,33 @@ def _lanczos_smallest_modes(
     return uncertain_variances.astype(np.float64), V_ritz.astype(np.float64)
 
 
+def _truncate_uncertain_modes(
+    uncertain_vectors: np.ndarray,
+    uncertain_variances: np.ndarray,
+    k: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Keep first k columns (most uncertain); k capped to available columns."""
+    k = min(int(k), uncertain_vectors.shape[1])
+    if k <= 0:
+        return np.empty((uncertain_vectors.shape[0], 0), dtype=np.float64), np.empty((0,), dtype=np.float64)
+    return uncertain_vectors[:, :k].copy(), uncertain_variances[:k].copy()
+
+
+def _save_combined_npz(out_path: Path, payload: dict) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_path, **payload)
+
+
+def _normalize_uncertain_mode_variants(uncertain_mode_variants: list[int]) -> list[int]:
+    """Return sorted unique positive k values; raises if empty or invalid."""
+    if not uncertain_mode_variants:
+        raise ValueError("uncertain_mode_variants must be a non-empty list of positive integers.")
+    ks = sorted({int(k) for k in uncertain_mode_variants if int(k) > 0})
+    if not ks:
+        raise ValueError("uncertain_mode_variants must contain at least one positive integer.")
+    return ks
+
+
 def _scan_meta_entry(
     observation_id: str,
     scan_index: int,
@@ -219,7 +246,7 @@ def run_synthesis(
     layout: GlobalLayout,
     scan_npz_dir: Path,
     out_path: Path,
-    n_uncertain_modes: int,
+    uncertain_mode_variants: list[int],
     lanczos_oversample: int,
     lanczos_maxiter: int,
     observation_id: str = "",
@@ -229,8 +256,13 @@ def run_synthesis(
     """
     Exact marginalized synthesis: accumulate cov_inv_tot and Pt_Ninv_d_tot from per-scan npzs,
     solve cov_inv_tot @ c_hat_obs = Pt_Ninv_d_tot, embed to full CMB grid.
-    Writes one npz with same structure as run_synthesis_multi_obs. observation_id labels the scans (e.g. single-obs id).
+
+    uncertain_mode_variants: e.g. [100, 200]. Lanczos runs once with max(variants) modes; writes
+    one file per k: {out_path.stem}_{k}modes{suffix} with uncertain_mode_* truncated to k columns.
+    Same map and cov_inv_tot in every file; only the uncertain-mode block differs.
     """
+    ks = _normalize_uncertain_mode_variants(uncertain_mode_variants)
+    k_lanczos = max(ks)
     bbox_ix0, bbox_iy0, nx, ny, mx, my, obs_pix_global, global_to_obs = _margined_obs_index(
         layout,
         margin_frac=margin_frac,
@@ -316,7 +348,7 @@ def run_synthesis(
     if n_good > 0:
         uncertain_variances, uncertain_vectors = _lanczos_smallest_modes(
             cov_inv_tot[np.ix_(good, good)],
-            n_modes=n_uncertain_modes,
+            n_modes=k_lanczos,
             oversample=lanczos_oversample,
             maxiter=lanczos_maxiter,
             seed=LANCZOS_SEED,
@@ -329,7 +361,7 @@ def run_synthesis(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    _out = dict(
+    _payload_base = dict(
         estimator_mode=np.array("ML", dtype=object),
         bbox_ix0=np.int64(bbox_ix0),
         bbox_iy0=np.int64(bbox_iy0),
@@ -346,21 +378,30 @@ def run_synthesis(
         n_scans_used=np.int64(len(existing)),
         cov_inv_tot=cov_inv_tot,
         good_mask=good,
-        uncertain_mode_vectors=uncertain_vectors,
-        uncertain_mode_variances=uncertain_variances,
         scan_metadata=np.array(scan_metadata, dtype=object),
     )
-    np.savez_compressed(out_path, **_out)
+    for k in ks:
+        Vk, vk = _truncate_uncertain_modes(uncertain_vectors, uncertain_variances, k)
+        out_k = out_path.parent / f"{out_path.stem}_{k}modes{out_path.suffix}"
+        _save_combined_npz(
+            out_k,
+            {
+                **_payload_base,
+                "uncertain_mode_vectors": Vk,
+                "uncertain_mode_variances": vk,
+                "n_uncertain_modes_stored": np.int64(min(k, Vk.shape[1])),
+            },
+        )
+        print(f"[write] {out_k} n_obs={n_obs} n_scans_used={len(existing)}/{layout.n_scans}", flush=True)
     if timings is not None:
         timings["write_s"] = time.perf_counter() - t0
-    print(f"[write] {out_path} n_obs={n_obs} n_scans_used={len(existing)}/{layout.n_scans}", flush=True)
 
 
 def run_synthesis_multi_obs(
     out_base: Path,
     field_id: str,
     observation_ids: list[str],
-    n_uncertain_modes: int,
+    uncertain_mode_variants: list[int],
     lanczos_oversample: int,
     lanczos_maxiter: int,
     out_subdir: str = "synthesized",
@@ -370,12 +411,13 @@ def run_synthesis_multi_obs(
 ) -> tuple[GlobalLayout, Path]:
     """
     Load all scan npzs from OUT_BASE/field_id/obs_id/scans/ for each obs_id, build combined layout,
-    accumulate cov_inv and Pt_Ninv_d, solve, write single OUT_BASE/field_id/<out_subdir>/recon_combined_ml.npz.
-    Output npz has same structure as run_synthesis (scan_metadata includes observation_id per scan).
-    Returns (combined_layout, out_npz_path).
+    accumulate cov_inv and Pt_Ninv_d, solve, write one file per k as {out_filename.stem}_{k}modes.npz (see run_synthesis).
+    Returns (combined_layout, last_written_npz_path).
     """
     if not observation_ids:
         raise ValueError("observation_ids must be non-empty")
+    ks = _normalize_uncertain_mode_variants(uncertain_mode_variants)
+    k_lanczos = max(ks)
     layouts = []
     artifact_paths: list[tuple[str, int, Path]] = []
     for obs_id in observation_ids:
@@ -502,7 +544,7 @@ def run_synthesis_multi_obs(
     if n_good > 0:
         uncertain_variances, uncertain_vectors = _lanczos_smallest_modes(
             cov_inv_tot[np.ix_(good, good)],
-            n_modes=n_uncertain_modes,
+            n_modes=k_lanczos,
             oversample=lanczos_oversample,
             maxiter=lanczos_maxiter,
             seed=LANCZOS_SEED,
@@ -517,7 +559,7 @@ def run_synthesis_multi_obs(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_npz = out_dir / out_filename
     t0 = time.perf_counter()
-    _out = dict(
+    _payload_base = dict(
         estimator_mode=np.array("ML", dtype=object),
         bbox_ix0=np.int64(combined_layout.bbox_ix0),
         bbox_iy0=np.int64(combined_layout.bbox_iy0),
@@ -534,12 +576,23 @@ def run_synthesis_multi_obs(
         n_scans_used=np.int64(len(artifact_paths)),
         cov_inv_tot=cov_inv_tot,
         good_mask=good,
-        uncertain_mode_vectors=uncertain_vectors,
-        uncertain_mode_variances=uncertain_variances,
         scan_metadata=np.array(scan_metadata, dtype=object),
     )
-    np.savez_compressed(out_npz, **_out)
+    last_path = out_npz
+    for k in ks:
+        Vk, vk = _truncate_uncertain_modes(uncertain_vectors, uncertain_variances, k)
+        out_k = out_dir / f"{out_npz.stem}_{k}modes{out_npz.suffix}"
+        last_path = out_k
+        _save_combined_npz(
+            out_k,
+            {
+                **_payload_base,
+                "uncertain_mode_vectors": Vk,
+                "uncertain_mode_variances": vk,
+                "n_uncertain_modes_stored": np.int64(min(k, Vk.shape[1])),
+            },
+        )
+        print(f"[write] {out_k} n_obs={n_obs} n_scans={len(artifact_paths)}", flush=True)
     if timings is not None:
         timings["write_s"] = time.perf_counter() - t0
-    print(f"[write] {out_npz} n_obs={n_obs} n_scans={len(artifact_paths)}", flush=True)
-    return combined_layout, out_npz
+    return combined_layout, last_path
