@@ -5,7 +5,7 @@ Plot combined and per-scan reconstructions (parallel path output).
 Input: path to a single synthesis npz from run_synthesis_full.py or run_synthesis_margined.py
   (e.g. .../synthesized/recon_combined_ml_margined.npz or .../<obs_id>/recon_combined_ml_full.npz).
   field_id is inferred as path.parent.parent.name for binned TOD lookup (DATA_DIR/field_id/<obs_id>/).
-  Optional: out_dir/scans/scan_*_ml.npz for per-scan map/precision plots; binned TOD from scan_metadata obs ids.
+  Optional: out_dir/scans/scan_*_ml.npz for per-scan precision (first two scans); binned TOD from scan_metadata obs ids.
 Output: out_dir/plots_full/<K>/ or out_dir/plots_margined/<K>/ with out_dir = path.parent, K = effective
   uncertain-mode count after optional CLI slicing. Branch from filename: recon_combined_ml_full* vs *margined*.
 
@@ -15,12 +15,13 @@ Full synthesis NPZ schema: see cad.parallel_solve.synthesize_scan module docstri
 Output plots (each function docstring lists I/O shapes):
   maps_naive_vs_combined_ml, power2d_naive_vs_combined_ml, cl_naive_vs_combined_ml,
   pixel_precision_synthesized_ml, cl_atm_distribution_ml, wind_scatter_ml,
-  maps_single_scan_naive_vs_point_ml, pixel_precision_scan0_scan1_ml,
+  pixel_precision_scan0_scan1_ml,
   uncertain_eigenvalues_ml, uncertain_eigenmode_maps_ml, maps_eigenmode_removed_ml, cl_eigenmode_removed_ml.
 
 CLI (synthesis npz path is required):
   python plot_reconstruction.py /path/to/recon_combined_ml_margined.npz
-  python plot_reconstruction.py /path/to/recon_combined_ml_margined.npz 50
+  for k in 10 50 100 200; do python /global/homes/j/junzhez/cmb-atmosphere/cad/analysis_parallel/plot_reconstruction.py /pscratch/sd/j/junzhez/cmb-atmosphere-data/ra0hdec-59.75/synthesized/recon_combined_ml_margined.npz "$k"; done
+
 
 Second arg n_modes: optional; use only the first n_modes uncertain eigenmodes for eigenvalue / eigenmode / deprojection plots.
 
@@ -59,7 +60,6 @@ from cad.plot_util import (
 )
 
 N_ELL_BINS = 128
-TOP_N_SCANS = 5
 PRECISION_CBAR_MIN = 1e-4
 
 
@@ -100,42 +100,6 @@ def _scan_ml_npz_paths_for_plots(out_dir: pathlib.Path, scan_metadata: list[dict
         if p.is_file():
             paths.append(p)
     return paths
-
-
-def _naive_coadd_one_scan(scan_path: pathlib.Path, bbox: map_util.BBox) -> np.ndarray:
-    """Naive coadd from a single scan; return (ny, nx)."""
-    with np.load(scan_path, allow_pickle=False) as z:
-        eff_tod_mk = np.asarray(z["eff_tod_mk"])
-        pix_index = np.asarray(z["pix_index"], dtype=np.int64)
-    ok = np.isfinite(eff_tod_mk)
-    s = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.float64)
-    c = np.zeros((int(bbox.ny), int(bbox.nx)), dtype=np.int64)
-    if np.any(ok):
-        ij = pix_index[ok]
-        ixg = ij[:, 0] - int(bbox.ix0)
-        iyg = ij[:, 1] - int(bbox.iy0)
-        in_box = (ixg >= 0) & (ixg < int(bbox.nx)) & (iyg >= 0) & (iyg < int(bbox.ny))
-        if np.any(in_box):
-            v = eff_tod_mk[ok].astype(np.float64, copy=False)[in_box]
-            np.add.at(s, (iyg[in_box], ixg[in_box]), v)
-            np.add.at(c, (iyg[in_box], ixg[in_box]), 1)
-    out = np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32)
-    hit = c > 0
-    out[hit] = (s[hit] / c[hit]).astype(np.float32)
-    return out
-
-
-def _load_scan_recon_map(npz_path: pathlib.Path) -> np.ndarray | None:
-    """Load single-scan npz; return (ny, nx) map (c_hat on full grid)."""
-    with np.load(npz_path, allow_pickle=True) as z:
-        nx = int(z["nx"])
-        ny = int(z["ny"])
-        obs_pix = np.asarray(z["obs_pix_global_scan"], dtype=np.int64)
-        c_obs = np.asarray(z["c_hat_scan_obs"], dtype=np.float64)
-    n_pix = nx * ny
-    c_full = np.zeros((n_pix,), dtype=np.float64)
-    c_full[obs_pix] = c_obs
-    return img_from_vec(c_full, nx=nx, ny=ny)
 
 
 def _scan_npz_sort_key(p: pathlib.Path) -> int:
@@ -256,46 +220,6 @@ def plot_naive_vs_combined_cl(
     ax.grid(True, which="both", alpha=0.2)
     ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_single_scan_naive_vs_point(
-    out_path: pathlib.Path,
-    naive_per_scan: list[np.ndarray],
-    rec_per_scan: list[np.ndarray],
-    extent: list[float],
-    vmin: float,
-    vmax: float,
-    wind_per_scan: list[tuple[float, float]] | None = None,
-) -> None:
-    """
-    Per-scan rows: left = naive coadd of that scan's TOD, right = per-scan ML point estimate.
-
-    Each row is one scan. Point estimate is c_hat_s from (P' tilde N_s^{-1} P) c_hat_s = P' tilde N_s^{-1} d_s.
-    Wind (wx, wy) deg/s in title. Shows scan-to-scan variation and single-scan recon quality.
-
-    I/O: naive_per_scan, rec_per_scan list of (ny, nx), extent [4], vmin/vmax scalars,
-    wind_per_scan optional list of (wx, wy). Output: PNG to out_path.
-    """
-    n_rows = len(naive_per_scan)
-    if n_rows == 0:
-        return
-    fig, axs = plt.subplots(n_rows, 2, figsize=(10.0, 2.3 * n_rows), dpi=150, sharex=True, sharey=True)
-    if n_rows == 1:
-        axs = axs.reshape(1, -1)
-    im_last = None
-    for i in range(n_rows):
-        imshow_ra_dec_map(axs[i, 0], naive_per_scan[i], extent=extent, title=f"Scan {i}: naive coadd [mK]", vmin=vmin, vmax=vmax)
-        right_title = f"Scan {i}: point estimate [mK]"
-        if wind_per_scan is not None and i < len(wind_per_scan):
-            right_title += _wind_title(wind_per_scan[i][0], wind_per_scan[i][1])
-        im_last = imshow_ra_dec_map(axs[i, 1], rec_per_scan[i], extent=extent, title=right_title, vmin=vmin, vmax=vmax)
-    fig.subplots_adjust(right=0.88, hspace=0.3, wspace=0.15)
-    pos = axs[-1, -1].get_position()
-    cax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.015, pos.height])
-    fig.colorbar(im_last, cax=cax, orientation="vertical").set_label("mK")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -483,6 +407,7 @@ def plot_eigenmode_removed_maps(
     n_pix = nx * ny
     naive_vec = np.asarray(naive_2d, dtype=np.float64)
     naive_vec = np.where(np.isfinite(naive_vec), naive_vec, 0.0)
+    # (ny, nx) -> flat with project convention pix = iy + ix*ny, so indexing by obs_pix_global is aligned.
     naive_vec = naive_vec.T.ravel()
     coadd_obs = np.asarray(naive_vec[obs_pix_global], dtype=np.float64)
     coadd_filt = deproject_uncertain_modes(coadd_obs, good_mask, uncertain_vectors)
@@ -701,20 +626,6 @@ def main(
         plot_wind_scatter(plots_dir / "wind_scatter_ml.png", scan_metadata)
 
     if scan_ml_npz_paths:
-        scan_npzs = scan_ml_npz_paths[:TOP_N_SCANS]
-        if scan_npzs and len(tod_paths) >= len(scan_npzs):
-            naive_per_scan = [_naive_coadd_one_scan(tod_paths[i], bbox) for i in range(len(scan_npzs))]
-            rec_per_scan = []
-            wind_per_scan = []
-            for p in scan_npzs:
-                m = _load_scan_recon_map(p)
-                rec_per_scan.append(np.where(hit_mask & np.isfinite(m), m, np.nan).astype(np.float32) if m is not None else np.full((int(bbox.ny), int(bbox.nx)), np.nan, dtype=np.float32))
-                art = load_scan_artifact(p)
-                w = art["wind_deg_per_s"]
-                wind_per_scan.append((float(w[0]), float(w[1])))
-            vmin_s, vmax_s = robust_vmin_vmax(np.concatenate([x.ravel() for x in naive_per_scan + rec_per_scan]))
-            plot_single_scan_naive_vs_point(plots_dir / "maps_single_scan_naive_vs_point_ml.png", naive_per_scan, rec_per_scan, extent, vmin_s, vmax_s, wind_per_scan=wind_per_scan)
-
         cov_npzs = scan_ml_npz_paths[:2]
         if len(cov_npzs) >= 2:
             art0 = load_scan_artifact(cov_npzs[0])
