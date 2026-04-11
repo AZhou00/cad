@@ -10,7 +10,8 @@ How to run (repeat per observation for "all" data):
   Example: python build_layout.py ra0hdec-59.75 101706388
 
 Then run_reconstruction.py (builds layout if needed, splits scans across GPUs), then run_synthesis.py.
-Observation IDs = numeric subdirs under cad/data/<field_id>/ (e.g. 101706388, 101715260, ...).
+Observation IDs = numeric subdirs under OUT_BASE/<field_id>/ (scratch); if that field root is missing,
+falls back to cad/data/<field_id>/.
 """
 
 from __future__ import annotations
@@ -39,9 +40,16 @@ def main() -> None:
     max_scans = int(argv[2]) if len(argv) > 2 else None
     min_hits_per_pix = int(argv[3]) if len(argv) > 3 else 1
 
-    field_dir = DATA_DIR / field_id
-    if not field_dir.exists():
-        raise FileNotFoundError(f"Field dir not found: {field_dir}")
+    field_dir_scratch = OUT_BASE / field_id
+    field_dir_cad = DATA_DIR / field_id
+    if field_dir_scratch.is_dir():
+        field_dir = field_dir_scratch
+    elif field_dir_cad.is_dir():
+        field_dir = field_dir_cad
+    else:
+        raise FileNotFoundError(
+            f"Field dir not found under scratch ({field_dir_scratch}) or cad/data ({field_dir_cad})"
+        )
     observations = discover_fields(field_dir)
     obs_dir = next((d for oid, d in observations if oid == observation_id), None)
     if obs_dir is None:

@@ -1,0 +1,86 @@
+
+\documentclass[%
+reprint,%onecolumn,
+%superscriptaddress,
+% groupedaddress,
+% unsortedaddress,
+%runinaddress,
+%frontmatterverbose, 
+%preprint,
+preprintnumbers,
+nofootinbib,
+%nobibnotes,
+%bibnotes,
+amsmath,amssymb,
+aps,
+%pra,
+%prb,
+ prd,
+%prl,
+%rmp,
+%prstab,
+%prstper,
+%floatfix,
+]{revtex4-2}
+
+\usepackage{preamble}
+
+
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+
+\bibliographystyle{ref-apsrev4-2.bst}
+
+\begin{document}
+\preprint{XXX}
+
+\title{Atmospheric Mitigation for CMB Experiments}
+
+\author{Alan (Junzhe) Zhou}
+\affiliation{Department of Physics, University of Chicago, Chicago, IL 60637, USA}
+\affiliation{Kavli Institute for Cosmological Physics, University of Chicago, Chicago, IL 60637, USA}
+
+\author{Scott Dodelson}
+\affiliation{Fermi National Accelerator Laboratory, P.O. Box 500, Batavia, IL 60510, USA}
+\affiliation{Department of Astronomy and Astrophysics, University of Chicago, Chicago, IL 60637, USA}
+\affiliation{Kavli Institute for Cosmological Physics, University of Chicago, Chicago, IL 60637, USA}
+
+\author{Yu-Qian (Rachel) Ouyang }
+\affiliation{Department of Physics, University of Chicago, Chicago, IL 60637, USA}
+\date{\today}
+
+\begin{abstract}
+Much of cosmology is built on the information gleaned from observing the cosmic microwave background (CMB). Ambitious ground-based experiments aim to learn even more about the universe on all scales and times. One of the biggest impediments faced by these experiments is the emission from the atmosphere, which is typically orders of magnitude larger than the CMB signal. We propose a method to decontaminate the CMB from the atmosphere using the fact that, while the CMB remains static on the sky, atmospheric emission flows around the field of view, driven by the wind. In the ideal conditions that the ``Frozen Flow '' approximation holds, we show that --- apart from a handful of modes --- the CMB can be reconstructed in a single scan.
+\end{abstract}
+
+\maketitle
+
+% \begin{figure}
+%     \centering
+%     \includegraphics[width=1.0\linewidth]{_fig_hist.pdf}
+%     \caption{xxx}
+%     \label{fig:hists}
+% \end{figure}
+
+% \input{1intro}
+% \input{2forwardmodel}
+\input{3inference_analytic}
+%\input{3inference_analytic_limits}
+% \input{3inference_svi}
+% \input{4result}
+% \input{5conclusion}
+% {\noindent\it Acknowledgments.} 
+
+\bibliography{ref_alan,refs}
+\appendix
+\input{appendix_wind}
+%\input{appendix_numerics}
+%\input{app_posterior_marginal}
+%\input{app_per_scan}
+% \input{appendix_analytical}
+
+%\input{appendix_two_pixel}
+% \input{appendix_analytical_backup}
+% \input{appendix_1_marginalization}
+\end{document}

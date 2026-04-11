@@ -1,0 +1,250 @@
+%\begin{widetext}
+\newcommand\muk{$\mu$K\, }
+
+
+\section{Introduction}
+
+Observations of the cosmic microwave background (CMB) underpin much of our understanding of the universe. Primarily because of the CMB, we have a fiducial cosmological model ($\Lambda$CDM) containing  7 parameters ($\Omega_b, \Omega_c, h, A_s, n_s, \sum m_\nu, \tau$)  that describes almost all data from redshift 1100 until today. Nonetheless, there is more to learn. Did the universe undergo a period of exponential expansion early in its history and if so were gravitational waves generated during this epoch? If the answer to both is yes, we will learn the energy scale of inflation. Is dark energy evolving, as suggested by several recent sets of observations? What is the sum of the neutrino masses? Are there spectral distortions in the CMB imprinted from an early epoch of nonequilibrium? What is the mass function of large bound objects such as galaxy groups and clusters? Even after all we have learned from the CMB, there is still significant information remaining to be mined, some of which may help answer these questions. In particular, the information in the CMB has not been exhausted: polarization on large scales is still noise-dominated and both temperature and polarization can be measured more precisely in order to obtain higher fidelity maps of both the $z=1100$ universe and the projected gravitational potential. 
+
+Ground-based CMB observations are contaminated by atmospheric emission, which can exceed the CMB signal by orders of magnitude at millimeter wavelengths. It is helpful to keep some numbers in mind to understand the scope of the problem. The RMS temperature fluctuations in the CMB are of order 80\muk, polarization $E$-mode fluctuations an order of magnitude smaller than that, and primordial $B$-modes likely lie below the 100 nK level. Current ground-based experiments scan the sky with thousands of detectors\footnote{Numbers used throughout the text are close to those in SPT-3G unless otherwise specified.}, each of which has RMS noise of order 700\muk/Hz$^{1/2}$, so a detector that samples at 150 Hz will have RMS noise of order $10^4$\muk in each sample. Detector noise however can be beaten down by scanning the same region of the sky with multiple independent detectors many times. As a simple example, if 500 detectors stare at the same $1^\circ$ patch of the sky for 1 second and record 150 samples each, then the coadded data have detector noise of $10^4\,\mu K/\sqrt{500\times 150} \simeq 40\mu K$, of order the CMB RMS. This is for a single stare; thousands of stares render the detector noise smaller still by a factor of 30-40. This is the reason why ground-based experiments have been able to make cosmic variance limited measurements of the spectrum. 
+
+
+Why then is it difficult for ground-based experiments to measure the CMB on large scales? The problem is emission from poorly mixed water vapor (i.e., clouds) in the atmosphere, emission characterized by a Kolmogorov spectrum falling as $l^{-8/3}$ or even faster on the largest scales~\cite{10.1093/mnras/272.3.551,Lay_2000}. Estimating the RMS fluctuations to be of order 10 mK at $l=6$  implies that they drop below the signal only at $l\sim 500$.  To reduce the atmosphere and to mitigate $1/f$ noise, experiments (at least at the South Pole) typically apply a high-pass filter, which effectively removes the large-scale CMB.
+
+If the atmosphere was stable over a single short scan and was independent from scan to scan, then the factor of 30 suppression from multiple scans still leaves atmospheric noise larger than the CMB on large scales. However, the atmosphere is not constant on the sky in even a single scan. %Wind advection of atmospheric turbulence breaks this degeneracythe atmosphere drifts across the field of view while the CMB remains fixed. This temporal signature enables separation through optimal filtering.
+Rather, the ``frozen atmosphere'' is blown by the wind~\cite{Taylor1938,10.1093/mnras/272.3.551,Lay_2000,2005ApJ...622.1343B,Errard_2015,PhysRevD.105.042004}. So, the large scale features are retained but simply move with time.
+%\be
+%T_{\rm atm}(\vec\theta,t) = T_{\rm atm}(\vec\theta-\vec w t,0)\eql{windflow}\ee
+%where $\vec\theta$ is the angular position, and $\vec w$ is the vector containing the %two components of the wind velocity transverse to the line of sight.
+The two dominant sources of emission then in many ground-based millimeter experiments -- the CMB and the atmosphere -- have different temporal properties: the atmosphere moves and the CMB does not. We propose to capitalize on this difference to remove, or at least mitigate, the atmosphere from ground-based CMB experiments.
+
+%We present a framework that jointly reconstructs the static CMB field $\mathbf{c}$ and per-scan frozen atmospheric screens $\{\mathbf{a}_s^0\}$ from multiple time-ordered data (TOD) scans. Each scan observes the CMB plus an independent atmospheric realization advected by wind $\mathbf{w}_s$ under the frozen-screen approximation. By marginalizing the per-scan atmospheres and exploiting known spatial correlations $C_a(\theta)$ and $C_{\rm CMB}(\theta)$, we derive the optimal maximum a posteriori (MAP) estimator that leverages both temporal structure within scans and redundancy across scans. We also propose a parallel per-scan processing while exactly recovering the global MAP solution upon combination.
+
+We make two major simplifying assumptions throughout this paper: the frozen flow approximation is exact and the flow velocity is known. Separately we have been working on algorithms to determine the flow velocity and already have tools to project the uncertainty on the velocity. So, we expect that both of these assumptions will not invalidate the method but rather reduce its effectiveness. We leave for future investigations the crucial question of how well this method works on real data.
+
+
+%\section{Joint regression for CMB and per-scan frozen atmosphere}
+
+\section{Formalism and Simple 1D Examples}
+
+%Detectors typically move across the sky in order to avoid $1/f$ detector noise. In this first section, we neglect this scanning in order to get to the heart of an atmospheric mitigation strategy.
+Under the frozen-screen approximation, atmospheric turbulence is advected rigidly across the field of view by wind. For a given scan, the atmospheric emission at position $\vec\theta$ on the sky at time $t$ is \be
+a(\vec\theta,t) = a(\vec\theta - \vec{w} t, t=0) \equiv a^0(\vec\theta - \vec{w} t),\eql{wind}\ee 
+where $a^0(\vec\theta)$ is the atmospheric screen at $t=0$ and $\vec{w}$ is the wind velocity, assumed constant during the scan. 
+
+The time ordered data (TOD) is indexed by time $t$ and detector $\alpha$:
+\begin{equation}
+{d}^\alpha_{t} = P^{\alpha}_{t,i}\,T_i + Q^\alpha_{t,i} a^0_{i} + \epsilon^\alpha_{t}.
+\end{equation}
+Here, $T_i$ is the static CMB map in each of $i=1,\ldots, N_{\rm pix}$ pixels at positions $\vec\theta_i$; $\epsilon^\alpha_t$ is the noise in detector $\alpha$ at time $t$; and $P$ and $Q$ are {\it pointing matrices} with dimensions $N_{\rm TOD} \times N_{\rm pix}$ that map the time-ordered data to the pixel observed by a given detector. For a single detector, the pointing matrix has rows with all zeros except for a single `1' in the column corresponding to the pixel at which it points. For example, in the unrealistic case when the detectors are stationary, each detector would simply have a single column with 1's and all other components equal to zero. This is the composition of $P$, the standard pointing matrix for the CMB. The atmospheric pointing matrix $Q$, on the other hand, encodes in it the movement of atmospheric emission across pixels. For example, in the stationary detector example, if the atmosphere moves one pixel per time step, then the 1's in $Q$ would be offset by a single column during each time step.
+
+We want to construct the posterior distribution for the map parameters $T_i$ during a scan. We assume that detector noise $\epsilon$, CMB temperature $T$, and atmospheric map $a^0$ are drawn from gaussian priors with mean zero and  variances $N_d$, $C_{\rm cmb}$, and $C_a$, so that the posterior is
+\begin{eqnarray}
+-2\ln(P(T,a^0| d)) &=& (d - PT - Qa^0)^t N_d^{-1}(d - PT - Qa^0) \nonumber\\
+&+& (a^0)^t C_a^{-1}a^0 +T^tC_{\rm cmb}^{-1} T.
+\end{eqnarray}
+Marginalizing over the atmosphere ${a}_s^0$ %as in Appendix~\ref{app:marginal}, 
+leads to an estimator for the maximum posterior of the CMB map: 
+%the per-scan MAP estimator and its posterior covariance are,
+\begin{equation}
+\hat T = C_{\hat{T}}\, P^t\tilde{N}_d^{-1} d\eql{test}\end{equation}
+with covariance
+\be
+C_{\hat{T}} \equiv \left(P^t\tilde{N}_d^{-1}P + C_{\rm cmb}^{-1}\right)^{-1}.
+\eql{testcov}\end{equation}
+Here $\tilde{N}_d \equiv N_d + Q C_a Q^T$. The $C_{\rm cmb}$ term in the covariance matrix is a direct result of imposing a prior on the CMB signal. It is useful to distinguish between the maximum likelihood (ML) estimator, which does not have the CMB prior, and the maximum a posteriori (MAP) which does contain $C_{\rm cmb}$. For now, we focus on the ML estimator.
+
+%\section{Understanding the single scan solution}
+ %To help with the following discussion, we show the binary matrices $P$ and $Q$ in Fig.~\ref{fig:pointings}.
+%\begin{figure}
+ %   \centering
+    %\includegraphics[width=\linewidth]{figs/pq.png}
+    %\caption{The pointing and the advection matrices $P$ and $Q$. Atmosphere moves to the right 1 pixel per time step. The first four rows are the 4 time steps of the first detector, next 4 the second detector, etc. The CMB pointing matrix $P$ has only 4 columns, the 4 pixels of the static CMB, while the atmospheric pointing matrix $Q$ has 7 columns, corresponding to the 7 elements that enter the 4 detectors' fields during the 4 time steps.}
+    %\label{fig:pointings}
+%\end{figure}
+
+The matrix $\tilde N_d$ whose inverse is required to estimate the CMB temperature can be inverted using the Woodbury identity:
+\begin{equation}
+    \tilde{N_d}^{-1} = \sigma_d^{-2} \left[
+    I - Q \left( \sigma_d^2 C_a^{-1} + Q^t Q \right)^{-1} Q^t  \right]
+\eql{tilden}\end{equation}
+where we have used the assumption of white detector noise, $N_d=\sigma_d^2 I$.
+
+Since $\tilde{N_d}^{-1}$ acts directly on the data to form the estimator, it is interesting to look at two extreme limits: (i) detector noise much larger than atmospheric noise and (ii) atmospheric noise dominant. In the first case, the $C_a^{-1}$ term in parentheses in \ec{tilden} dominates, and therefore the term in brackets on the right-hand side reduces to the identity with a small correction proportional to $C_a/\sigma_d^2$. That is, we are left with the standard estimator
+\be
+\hat T^{\rm std} = (P^tN_d^{-1}P)^{-1}\, P^t N_d^{-1} d \eql{std}
+\ee
+if only detector noise was present. The covariance of this estimator is simply $(P^tN_d^{-1}P)^{-1}$, which in the case of white noise reduces to $\sigma_d^2/N_{\rm timestep}$, which we will refer to below as the {\it noise floor}.
+
+
+
+In the opposite limit, the atmosphere dominates and 
+\begin{equation}
+    \lim_{C_a \to \infty} \tilde{N}^{-1} = \sigma_d^{-2} \left[
+    I - Q \left(Q^t Q \right)^{-1} Q^t  \right] \equiv \frac{I - \Pi_{\text{atm}}}{\sigma_n^2}
+\end{equation}
+where $\Pi_{\text{atm}}$ projects on the {\it column space} of $Q$. %In the simple 4-detector example it is shown in Fig.~\ref{fig:pi}. 
+It has rank equal to the number of free parameters required to specify the atmosphere $a^0$. Since the atmosphere moves in and out of the field of view of the telescope, this number is typically larger by about a factor of two than the number required to specify the CMB. 
+%\begin{figure}
+ %   \centering
+  %  \includegraphics[width=.8\linewidth]{figs/pi.png}
+   % \caption{The projection matrix that extracts out data from the moving atmosphere. For example, the first column mutiplies the 16-component data vector to form a single number. That number is the sum of the signal in the first detector at $t=0$, the second detector at $t=1$, the 3rd at $t=2$, and the fourth at the final time step. This extracts out the $A_3$ component which has moved across all four detectors. Note that some columns are copies of one another (e.g., 0 and 5) indicating that the matrix is singular.}
+  %  \label{fig:pi}
+%\end{figure}
+The projection operator $\Pi_{\text{atm}}$ captures all time-stream data vectors that are physically consistent with a rigid and drifting atmosphere. This space depends only on the wind velocity and does \emph{not} depend on the specific realization of the atmosphere. Therefore, $\tilde{N}^{-1}$ projects the data vector $\mathbf{d}$ onto the orthogonal complement of the column space (also called the null space) of $Q$.
+%\begin{equation}
+ %   \tilde{N}^{-1} = \frac{1}{\sigma_n^2} \Pi_{\text{atm}}^{\perp} = \frac{1}{\sigma_n^2} \left(I - \Pi_{\text{atm}}\right).
+%\end{equation}
+So in the large atmosphere limit, $\tilde{N}^{-1}$ extracts the parts of the data that cannot be generated from a drifting atmosphere. If we define $\Pi_{\text{atm}}^{\perp} \equiv I - \Pi_{\text{atm}}$, then, in the large $C_a$ limit,  the ML estimator becomes
+\begin{equation}
+    \hat{T}^{\text{ML}}
+    \rightarrow \underbrace{\sigma_n^2 (P^T \Pi_{\text{atm}}^{\perp} P)^{-1}}_{\text{Covariance}} \quad\times \underbrace{\sigma_n^{-2} P^T \Pi_{\text{atm}}^{\perp} d}_{\text{Weighted Projected Data}},
+\end{equation}
+and projects out all modes that can be generated by the atmosphere, weighting those retained by the inverse variance. 
+
+
+Let's build some intuition by examining the simple case where the signal is spatially 1D, and the telescope is not scanning. In other words, we have a static 1D array of detectors that continuously observes an array of sky pixels of the same number. The atmosphere drifts from left to right at the speed of one pixel per time step. For simplicity, consider only 4 detectors.
+
+
+The ensuing covariance matrix, as given in \ec{testcov}, is a function of both detector noise $\sigma_d$ and the variance of the atmospheric contribution, $C_a$. In this simple case, the matrix $C_{\hat T}$ is $4\times4$ but it has rank 3, because the mean of the CMB temperature in all 4 pixels is not well-determined in the presence of atmospheric noise. Fig.~\ref{fig:mode_noise} shows the noise on each of four ``modes'' (linear combinations of the CMB temperature in the 4 pixels) as a function of the ratio of the RMS atmospheric emission and detector noise. As expected, when there is no atmosphere ($C_a\ll \sigma_d^2$), the error on each pixel reduces to $\sigma_d$ divided by the square root of the number of observations. 
+\begin{figure}
+    \centering
+    \includegraphics[width=.8\linewidth]{figs/mode_noise.png}
+    \caption{The noise on each of four modes, linear combinations of the CMB temperature in the 4 pixels, as a function of the ratio of atmospheric to detector noise.}
+    \label{fig:mode_noise}
+\end{figure}
+In the opposite limit, one of the modes (``Mode 3'') -- the mean of the temperature in all pixels -- is poorly measured as indicated by the sharp rise in noise as $C_a\gg \sigma_d^2$. The more interesting result is that the noise in the other 3 modes is virtually unaffected by the large atmospheric contamination: the mitigation scheme of inferring the atmosphere by using its coherent motion works. The small differences in the asymptotic limits of the 3 well-measured modes are interesting and will carry over quantitatively to more realistic scenarios. The mode that is best measured is primarily the difference between the two central pixels with a small admixture of the difference between the two outer pixels. The atmosphere in the central pixels is measured most accurately because it is observed between two and four times, and this accuracy propagates to the accuracy with which CMB modes in the central region can be measured. Mode 2 in the figure on the other hand is primarily the difference between the two outer pixels, and the atmosphere in those is less well-measured, so the noise on $\hat T$ is larger. 
+
+A simple way of understanding why the mean cannot be measured well is to note that adding a constant to the CMB across all pixels and subtracting the same constant from the atmosphere in all pixels does not change the time stream data. Slightly more formally, consider the Fourier space representation of the TOD. Fourier transforming in both the spatial and temporal dimensions, 
+\be
+\tilde{a}(l,\omega) = \int d\theta\,dt \, e^{-i[l\theta+\omega t]} a(\theta,t).\ee
+Since $a$ is assumed to take the (1D) form of \ec{wind}, the integrals reduce to 
+\be
+\tilde{a}(l, \omega) = a^0(l) \delta_D(\omega+lw).\ee 
+In other words, in this simple case the atmosphere lives on the line $\omega = -lw$ in the ($l, \omega$)-plane. The CMB signal on the other hand is static so lives on the line $\omega = 0$. This is shown in the first row of Fig.~\ref{fig:signal_fourier}.
+\begin{figure}
+    \centering
+    \includegraphics[width=0.7\linewidth]{figs/signal_fourier.png}
+    \caption{TOD and its component in Fourier space. Wind to the right. 32 time steps × 32 detectors. small noise. Atmospheric and CMB correlation length are both 1 pixel. Equal amplitude.}
+    \label{fig:signal_fourier}
+\end{figure}
+Although we will not explore this in this work, the Fourier analysis also provides insight into the more realistic case where the telescope does scan. In that case, the CMB will not live along the $\omega=0$ line but along the $\omega=-\omega_{\rm scan}$, and the atmosphere too will be shifted to the $lw-\omega_{\rm scan}$ line. So, the two contributions to the data will be separated and extraction of the CMB signal will proceed almost entirely as described here.
+
+\section{Generalization to 2D Fields}
+
+We now generalize to the more realistic situation of a two-dimensional field with the wind vector driving the atmosphere now also a 2D vector. To illustrate the main points, we will stick within the framework of a stationary array of detectors, so each detector points at the same point in the sky at all times. This will leave the CMB signal at frequency $\omega=0$; therefore the contaminated modes will be those with $\vec w\cdot\vec l=0$. We work with a $32\times32$ grid of pixels each of which is targeting a $0.5^2$ square degree pixel and use 16 time steps. In addition to the atmosphere drawn from a Kolmogorov power spectrum with index $-11/3$, we add in white detector noise to each detector with an amplitude $\sigma_d=26\mu$K, leading to a noise floor (in the absence of the atmosphere) of $26/\sqrt{16} \mu$K. The wind is assumed to move 1 pixel in the $x$-direction and 0.5 pixels in the $y$-direction per timestep. 
+
+\subsection{Known Wind}
+
+If the wind is known and the frozen field approximation holds, then there is no uncertainty. Fig.~\rf{maps_known_wind} shows that in this case, while the naive estimator picks up the full 10 mK atmosphere, the maximum likelihood estimator extracts the true CMB with residuals shown in the bottom right panel not too far above the noise floor of 6$\mu$K and well below atmospheric noise. The bottom row has 16 contaminated modes with $\vec w\cdot \vec l$ close to zero. It is clear though from the middle panel, which contains all the modes, that one mode -- the mean over the whole region $(\vec l=0$) -- is severely contaminated. Note that the pattern in the middle panel of the middle row is nearly identical to the true CMB just with an overall offset of $\sim -400\mu$K.
+
+\Sppng{maps_known_wind}{Leftmost panels show the true (simulated) CMB. Top middle panel shows the naive estimated CMB using the standard estimator (\ec{std}), and indeed the residuals shown on the top right are dominated by the atmosphere, of order 10 mK. Bottom panel shows the ML estimator of \ec{test} (without the CMB prior) with 16 contaminated modes removed. Middle row shows the estimator including the contaminated modes. Note that the residuals in this case are dominated completely by the mean offset, of order 400 $\mu$K.}
+
+As an aside, it is interesting to try to understand why only the single mode with $\vec l=0$ produces most of the contamination. Fig.~\rf{dc_mode_analysis} shows $\vec l\cdot \vec w$ for each of the $32^2$ Fourier modes. Note the blue band running from upper left to bottom right for which $\vec l\cdot \vec w=0$ in both the left and middle panels. Our expectation was that all of these modes should be completely overwhelmed by the atmosphere and therefore would have zero information. The middle panel shows an estimate of the information in each mode, quantified by diagonal elements of the Fisher matrix: $F=C_{\hat T}^{-1}$. The color bar in the middle panel contains the Fisher matrix evaluated in the Fourier basis:
+\be
+\langle e_{\vec l}(\vec x_i) | F | e_{\vec l}(\vec x_j) \rangle\equiv \sum_{ij} \cos(\vec l\cdot\vec x_i) F_{ij} \cos(\vec l\cdot\vec x_j)\eql{fishexp}
+\ee
+where $\vec l=\frac{2\pi(n_x,n_y)}{32}$ and the Fourier eigenvectors $e_{\vec l}(\vec x_i) = \cos(\vec l\cdot\vec x_i)$. If the Fisher matrix were diagonal, then this would truly be the information contained in the $\vec l$ mode. The Fisher matrix is not diagonal but the true eigenvalues of $F$ are qualitatively similar to the diagonal elements shown in the figure.
+
+
+Note that the information is {\bf not} zero everywhere along the band. This is clearer in the rightmost panel, which shows that only the $\vec l=0$ mode is completely overwhelmed. This is initially surprising, since
+\be
+F \propto P^t\Pi^\perp_{\rm atm} P.\ee
+The $N_t\times N_{\rm pix}^2$ matrix $P$ acts on a map generated by a CMB Fourier mode $\vec l$ by producing the timestream that that mode would leave. Then $\Pi^\perp_{\rm atm}$ removes any signature of the atmosphere from that timestream, producing a new map devoid of the atmosphere. But if the mode has $\vec l\cdot \vec w=0$, the whole timestream could have been produced by the atmosphere, so $\Pi^\perp_{\rm atm}$ should remove it all. The result should 0's for all of these modes in \ec{fishexp} and the corresponding band in Fig.~\rf{maps_known_wind}. 
+
+The reason why there is some information in these modes is that the wind speed here (and in real life) will not be an integer value of pixels in each time step. The current implementation has the atmosphere occasionally remaining in the same    
+  pixel for consecutive time steps rather than moving uniformly. This artifact of the discretization leads to atmospheres that are not removed by $\Pi^\perp_{\rm atm}$.
+
+%
+%
+%$$a(\vec{x} + \vec{w}t) = e^{i\vec{\ell}\cdot(\vec{x}+\vec{w}t)} = e^{i\vec{\ell}\cdot\vec{x}} \cdot   
+%  e^{i\vec{\ell}\cdot\vec{w},t} = e^{i\vec{\ell}\cdot\vec{x}}$$ 
+%                                                                                                         
+%  So $P\cdot\text{mode} = Q\cdot a$, and $\Pi^\perp$ kills it.                                           
+%  
+%  But that argument assumes the atmosphere can exactly reproduce the CMB mode. The problem is the CMB and
+%   atmosphere live on different grids (32×32 vs 48×48). The Fourier mode $e^{i\vec{\ell}\cdot\vec{x}}$
+%  with period $32/n_x$ pixels on the CMB grid doesn't correspond to an exact Fourier mode on the 48-pixel
+%   atmosphere grid (it would need mode index $1.5, n_x$, which isn't an integer). So the atmosphere can
+%  only approximately mimic the CMB mode — close but not exact.
+
+%  The DC mode ($\ell = 0$) is the exception: a constant is a constant on any grid, so the degeneracy is  
+%  exact and Fisher = 0. For higher $|\ell|$ modes with $\vec{\ell}\cdot\vec{w} = 0$, the grid mismatch
+%  matters more, which explains the %ramp from Fisher ≈ 0 (DC) up to 15,641 at the highest contaminated    
+%  mode.           
+%
+%  This also means the grid mismatch is actually necessary for the method to work — if $N_{atm} = N_{pix}$, $Q$'s 
+%  column space would swallow the entire CMB space and $\Pi^\perp$ would kill everything.
+                                                                                           
+
+
+\Sppng{dc_mode_analysis}{The $32\times 32$ Fourier modes. Left panel shows the magnitude of $\vec l\cdot \vec w$ for all the modes. The $\vec l=0$ mode has by far the largest variance. All the others that nominally satisfy $\vec l\cdot\vec w=0$ have finite pixelization such that some of the information is retained. See text for further explanation.}
+
+The power spectrum of the estimator agrees extremely well with the true CMB draw, as indicated in Fig.~\rf{Cell_known_wind}. The standard (labeled ``naive'' in the figure) estimator is completely dominated by the atmosphere and therefore recovers a power spectrum orders of magnitude above truth. The only way to reduce this would be to co-add many scans, and even then the low-$l$ signal will be contaminated. The maximum likelihood estimator is shown to recover the true spectrum extremely well, which in accord with the visual inspection of the map in Fig.~\rf{maps_known_wind}, where the only large deviation from truth is an overall offset, which would show up at $l=0$..
+
+\Sppng{Cell_known_wind}{Power spectra of the different estimators along with truth.}
+
+%We expect that many of the modes will be properly estimated by \ec{test} but in this 2D case, the atmospheric frequencies will satisfy $\omega=\vec l\cdot \vec w$. Since all frequencies that intersect the $\omega=0$ frequency of the CMB cannot be determined, we expect that all $\vec l$-modes that satisfy $l_x=0$ (recall that it is assumed that the wind is moving in the $\hat x$ direction) will not be determined. Indeed, this is what is shown in Fig.~\ref{fig:2d3panel_r}. The CMB has an RMS of order 100 $\mu$K, while that of the atmosphere is 30 times larger. \footnote{We set $C_l^{\rm atm} = 10^8 (6/l)^{8/3} \mu K^2$ for $l> 6$ and flat from $l=2\rightarrow 6$.} Detector noise is taken to be white with an RMS in each pixel equal to 1 $\mu$K. Since the atmosphere is much larger than the CMB, the ML estimator fails to eliminate it. However, the estimator fails precisely the way expected: all modes that are constant along $\hat x$ -- i.e., those with $l_x=0$ -- have large values, much larger than either the CMB or the detector noise.
+%\Spng{naive}{The raw data without filtering out the atmosphere using the simple pointing matrix.}
+
+%If we subtract off the $l_x=0$ modes, we are left with the residual maps shown in Fig.~\ref{fig:truevest_r} with residuals shown in \ref{fig:cutmodes2d_r}. These modes are well determined, with only detector noise limiting the fidelity. 
+
+
+
+%\Spng{cutmodes2d_r}{Same mock sky as Figure~\ref{fig:2d3panel_r} now showing the difference between True CMB and the estimator when contaminated modes have been removed. Instead of residuals of order 20$\mu$K, the fidelity is limited only by detector noise. Since each detector has an RMS of $1\mu$K in this mock, and there are 16 time steps, the noise can be as small as $1\mu K/4$, and indeed this is how well the uncontaminated modes of the CMB are reconstructed.}
+
+This is for a single scan. Since multiple scans are taken of the same region, and the wind will have a different velocity vector in each, the set of contaminated modes will be different in each scan. Therefore, over the course of many scans, essentially all of the modes (except for the $\vec l=0$ mode) can be reconstructed with minimal atmospheric contamination.
+
+\subsection{Accounting for uncertainty in wind}
+
+\Sppng{wind_error_sensitivity}{Overall residual RMS as a function of error in the wind.}
+
+We now explore the implications of uncertainty in the wind, beginning with the sobering plot of Fig.~\rf{wind_error_sensitivity}. We see that even a percent level uncertainty in the wind velocity will lead to large atmospheric leakage. 
+
+\Sppng{windopt_seed4}{Initial guess of wind and then improvement after iterating on the cost function.}
+
+Fig.~\rf{windopt_seed4} shows a way to mitigate this problem: obtain a zeroth order estimate of the wind via, e.g., the method described in the Appendix. Then, sweep through a fine grid around this initial estimate, using as a score function the total variance. As shown in the figure, this enables us to get extremely close to the true value; i.e., we are using the sensitivity of the residuals depicted in Fig.~\rf{wind_error_sensitivity} to determine the wind: since the data is predominantly atmosphere, the variance will be minimized when the atmosphere is most cleanly removed, when the value of the wind used in the estimator is closest to truth.
+
+\Sppng{maps_seed4}{Maps showing the uncontaminated modes.}
+
+Fig.~\rf{maps_seed4} shows that the ensuing estimator of the CMB does extremely well after the 16 most contaminated modes, as identified by the low values of their Fisher eigenvalues, are removed.
+
+%The CMB map T lives in a 1024-dimensional vector space (one component per pixel). We can expand it in  
+%  two different orthonormal bases:                          
+%                                                                                                         
+%  Fourier basis: The basis vectors are 2D plane waves labeled by (m, n):                                 
+%                                                                                                         
+%  $$e_{mn}(x,y) = \frac{1}{N} e^{2\pi i(mx + ny)/N}$$                                                    
+%                                                            
+%  The CMB in this basis: $\tilde{T}{mn} = \sum_{xy} T(x,y), e_{mn}^*(x,y)$                                
+%   
+%  Fisher eigenbasis: Diagonalize $F = \sigma_n^{-2} P^T \Pi^\perp P$:                                    
+%                                                            
+%  $$F, v_\alpha = \lambda_\alpha, v_\alpha$$                                                             
+%                                                            
+%  The CMB in this basis: $T_\alpha = v_\alpha^T \mathbf{T}$                                              
+%   
+%  The ML estimator in the Fisher eigenbasis is simply:                                                   
+%                                                            
+%  $$\hat{T}\alpha = \frac{1}{\lambda\alpha}, v_\alpha^T \left(\sigma_n^{-2} P^T \Pi^\perp d\right)$$     
+%   
+%  and we cut by setting $\hat{T}\alpha = 0$ for the smallest $\lambda\alpha$.                            
+%                                                            
+%  For nearest-pixel Q, $F$ is diagonal in the Fourier basis, so $v_\alpha = e_{mn}$ and the two bases    
+%  coincide. For bilinear Q, they don't — $F$ has ~11% off-diagonal elements in the Fourier basis.
+
+%\section{Improving Wind Estimates}
+
+%
+%The residuals shown in Fig.~\ref{fig:cutmodes2d_r} are tantalizingly small. Let us identify the assumptions that lead to this mitigation:
+%\begin{enumerate}
+%    \item Detector noise is white with no $1/f$ rise at low frequencies.
+%    \item The telescope is not moving so the CMB shows up at $\omega=0$.
+%    \item  The wind velocity is known.
+%    \item The atmosphere moves coherently with the wind for the duration of a scan.
+%\end{enumerate}
+%The first two of these are solvable in principle and related: the reason for scanning in the first place is to mitigate the $1/f$ noise in detectors. Just as the atmospheric signal is confined to the $\omega=\vec l\cdot \vec w$ plane, the CMB signal moves to the $\omega=\vec l\cdot \vec v_{\rm scan}$ plane. Whereas in the simple case, eliminating the atmospheric modes meant zeroing out all modes with $\vec l\cdot\vec w=0$, in the more realistic scanning case, the contaminated modes will be those with $\vec l\cdot \vec w=\vec l\cdot \vec v_{\rm scan}$.
+%
+%The third problem -- determining the wind vector -- is more challenging. However, we have explored a number of techniques on mock catalogs that work: a simple one is to assume the entire signal is comprised of the atmosphere and do a field level analysis adding the two components of the wind velocity as additional parameters. In realistic mocks, we are able to recapture the wind vector to within a few percent. 
+%
+%The fourth problem is the most challenging. On what scales, for how long, and to what degree of accuracy does the Frozen Atmosphere approximation hold? This question can be answered only by looking at real data. Having said that, there are a variety of tools that can be used to address the breakdown in this approximation, especially if the simple linear estimator is able to mitigate a substantial fraction of the contamination. Singular Value Decomposition has been successfully used~\cite{ReitbergerSauer2020} to extract moving objects from stationary fields. Further, the analytic estimator in \ec{test} is the maximum of the posterior, but one could imagine using field level inference to determine simultaneously the values of atmospheric emission and the CMB in all pixels, along with a handful of other parameters such as the wind velocity. Within that powerful framework, adding in multiple atmospheric layers or even identifying emission blobs and tracking their movement allowing for varying velocity should make further mitigation possible.

@@ -1,0 +1,19 @@
+\section*{Parameter Definitions}
+
+\begin{tabular}{ll}
+$s = 1, \ldots, N_{\text{scan}}$ & Scan index \\
+$t$ & Time index within a scan \\
+$p = 1, \ldots, N_{\text{pix}}$ & Pixel index on the sky \\
+$\alpha, \beta$ & Detector index \\
+$\mathbf{d}_s$ & Time-ordered data (TOD) for scan $s$ \\
+$P$ & Pointing matrix mapping pixels to TOD \\
+$L_s$ & Wind advection operator for scan $s$ \\
+$\mathbf{c}$ & Static CMB field, defined on pixels \\
+$\mathbf{a}_s^0$ & Atmospheric field at $t=0$ for scan $s$ \\
+$\mathbf{w}_s$ & Wind vector (deg/s) for scan $s$ \\
+$\boldsymbol{\epsilon}_s$ & Instrumental noise (Gaussian, white) \\
+$C_a(\theta)$ & Atmospheric 2-point correlation function \\
+$C_{\rm CMB}(\theta)$ & CMB 2-point correlation function \\
+$C_a, C_c$ & Pixel-space covariance matrices for atmosphere and CMB \\
+$\tilde{N}_s$ & Effective per-scan covariance after atmosphere marginalization
+\end{tabular}

@@ -1,0 +1,245 @@
+%%%%%%%%%%%%%%%% main %%%%%%%%%%%%%%%%
+\usepackage{microtype}
+% \usepackage{caption}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+% \usepackage{subcaption}
+\usepackage{braket}
+\usepackage{bm} % bold math
+\usepackage{dsfont} %%%%
+\usepackage{graphicx} %%%%
+\usepackage[dvipsnames]{xcolor}
+\usepackage{hyperref}
+  \hypersetup{
+    colorlinks=true,
+    linkcolor=BrickRed,
+    filecolor=BrickRed,
+    citecolor=BrickRed,
+    urlcolor=RoyalBlue,
+  }
+\usepackage[capitalize, nameinlink]{cleveref}
+\usepackage[figure, figure*]{hypcap}
+\usepackage[makeroom]{cancel}
+\usepackage{hyperref}% add hypertext capabilities
+\usepackage{booktabs}
+
+\usepackage{multirow}
+%%%%%%%%%%%%%%%% algorithm %%%%%%%%%%%%%%%%
+% % bug in revtex -> algorithm package conflict
+% \usepackage{float}
+% \makeatletter
+% \let\newfloat\newfloat@ltx
+% \makeatother
+% Patching the algorithmic environment to suppress \vadjust error in revtex
+% \usepackage{etoolbox}
+% \makeatletter
+% \patchcmd{\@algocf@start}{\vadjust{\nobreak}}{\nobreak\vspace{0pt}}{}{}
+% \makeatother
+% \usepackage{float} % Add this package
+
+% \usepackage{algorithm}
+% \usepackage{algpseudocode}
+
+%%%%%%%%%%%%%%%% footnote %%%%%%%%%%%%%%%%
+% footnote runs over
+% \interfootnotelinepenalty=10000
+
+%%%%%%%%%%%%%%%%Revisions%%%%%%%%%%%%%%%%
+\newcommand{\comments}[1]{{\textcolor{red}{#1}}}
+
+%%%%%%%%%%%%%%%% comments %%%%%%%%%%%%%%%%
+\newcommand{\alan}[1]{{\color{red}{[Alan: #1]}}}
+\newcommand{\scott}[1]{{\color{blue}{[Scott: #1]}}}
+
+%%%%%%%%%%%%%%%%In-text%%%%%%%%%%%%%%%%
+\newcommand{\Sec}{Sec.~}
+\newcommand{\App}{App.~}
+\newcommand{\Secs}{Secs.~}
+\newcommand{\Eq}{Eq.~}
+\newcommand{\Eqs}{Eqs.~}
+\newcommand{\Fig}{Fig.~}
+\newcommand{\Figs}{Figs.~}
+\newcommand{\Tab}{Tab.~}
+\newcommand{\Tabs}{Tabs.~}
+\newcommand{\Alg}{Alg.~}
+
+%%%%%%%%%%%%%%%%Paper-Specific Symbols%%%%%%%%%%%%%%%%
+\newcommand{\dsn}{\delta_\mathrm{SN}}
+\newcommand{\dfp}{\delta_\mathrm{FP}}
+\newcommand{\dcmb}{\delta_\mathrm{CMB}}
+\newcommand{\ssn}{\sigma_\mathrm{SN}}
+\newcommand{\sfp}{\sigma_\mathrm{FP}}
+\newcommand{\scmb}{\sigma_\mathrm{CMB}}
+
+\newcommand{\dobs}{\delta_\mathrm{obs}}
+\newcommand{\dtrue}{\delta_\mathrm{true}}
+\newcommand{\noise}{n}
+
+\newcommand{\mfid}{m_\text{fid}}
+\newcommand{\fsky}{f_\text{sky}}
+%%%%%%%%%%%%%%%%Cosmology Symbols%%%%%%%%%%%%%%%%
+\newcommand{\As}{A_\mathrm{s}}
+\newcommand{\ns}{n_\mathrm{s}}
+
+\newcommand{\Omegam}{\Omega_\mathrm{m}}
+\newcommand{\Omegab}{\Omega_\mathrm{b}}
+\newcommand{\OmegaL}{\Omega_\mathrm{\Lambda}}
+\newcommand{\Omegak}{\Omega_\mathrm{k}}
+
+\newcommand{\npot}{\Phi} % Newtonian gravitational potential
+
+%%%%%%%%%%%%%%%%Units%%%%%%%%%%%%%%%%
+\newcommand{\Mpc}{\mathrm{Mpc}}
+\newcommand{\Mpch}{\mathrm{Mpc}/h}
+\newcommand{\rad}{\mathrm{rad}}
+\newcommand{\Msun}{M_\odot}
+
+%%%%%%%%%%%%%%%%Distributions%%%%%%%%%%%%%%%%
+\newcommand{\distunif}{\mathcal{U}}
+\newcommand{\distgauss}{\mathcal{G}}
+
+%%%%%%%%%%%%%%%%Packages%%%%%%%%%%%%%%%%
+\newcommand{\healpix}{\text{HEALPix}}
+\newcommand{\nside}{\text{nside}}
+
+\newcommand{\cosmosis}{\texttt{CosmoSIS}}
+\newcommand{\camb}{\texttt{camb}}
+\newcommand{\halofit}{\texttt{halofit}}
+\newcommand{\jax}{\texttt{JAX}}
+\newcommand{\numpyro}{\texttt{numpyro}}
+\newcommand{\miko}{\texttt{Miko}}
+
+%%%%%%%%%%%%%%%%General Math Symbols%%%%%%%%%%%%%%%%
+\newcommand{\bfa}{{\bm{a}}}
+\newcommand{\bfb}{{\bm{b}}}
+\newcommand{\bfc}{{\bm{c}}}
+\newcommand{\bfd}{{\bm{d}}}
+\newcommand{\bfe}{{\bm{e}}}
+\newcommand{\bff}{{\bm{f}}}
+\newcommand{\bfg}{{\bm{g}}}
+\newcommand{\bfh}{{\bm{h}}}
+\newcommand{\bfi}{{\bm{i}}}
+\newcommand{\bfj}{{\bm{j}}}
+\newcommand{\bfk}{{\bm{k}}}
+\newcommand{\bfl}{{\bm{l}}}
+\newcommand{\bfm}{{\bm{m}}}
+\newcommand{\bfn}{{\bm{n}}}
+\newcommand{\bfp}{{\bm{p}}}
+\newcommand{\bfq}{{\bm{q}}}
+\newcommand{\bfr}{{\bm{r}}}
+\newcommand{\bfs}{{\bm{s}}}
+\newcommand{\bft}{{\bm{t}}}
+\newcommand{\bfu}{{\bm{u}}}
+\newcommand{\bfv}{{\bm{v}}}
+\newcommand{\bfx}{{\bm{x}}}
+\newcommand{\bfy}{{\bm{y}}}
+\newcommand{\bfz}{{\bm{z}}}
+
+\newcommand{\bfA}{{\bm{A}}}
+\newcommand{\bfD}{{\bm{D}}}
+\newcommand{\bfJ}{{\bm{J}}}
+\newcommand{\bfN}{{\bm{N}}}
+\newcommand{\bfT}{{\bm{T}}}
+\newcommand{\bfX}{{\bm{X}}}
+\newcommand{\bfY}{{\bm{Y}}}
+\newcommand{\bfZ}{{\bm{Z}}}
+
+\newcommand{\bfalpha}{{\bm{\alpha}}}
+\newcommand{\bfbeta}{{\bm{\beta}}}
+\newcommand{\bfxi}{{\bm{\xi}}}
+\newcommand{\bftheta}{{\bm{\theta}}}
+\newcommand{\bfsigma}{{\bm{\sigma}}}
+\newcommand{\bfphi}{{\bm{\phi}}}
+\newcommand{\bfkappa}{{\bm{\kappa}}}
+\newcommand{\bfgamma}{{\bm{\gamma}}}
+\newcommand{\bfell}{{\bm{\ell}}}
+\newcommand{\bfrho}{{\bm{\rho}}}
+\newcommand{\bfomega}{{\bm{\omega}}}
+\newcommand{\bfeta}{{\bm{\eta}}}
+\newcommand{\etaperp}{{{\bm{\eta}}_\perp}}
+
+\newcommand{\C}{\mathbb{C}}
+\newcommand{\D}{\mathbb{D}}
+\newcommand{\I}{\mathbb{I}}
+\newcommand{\M}{\mathbb{M}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Q}{\mathbb{Q}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\T}{\mathbb{T}}
+\newcommand{\Y}{\mathbb{Y}}
+\newcommand{\Z}{\mathbb{Z}}
+
+%%%%%%%%%%%%%%%%Operators and Functions%%%%%%%%%%%%%%%%
+% time derivatives
+\newcommand{\dt}{\dot}
+\newcommand{\dtau}{\partial_\tau}
+%gradient
+\newcommand{\grad}{\nabla}
+%variance
+\newcommand{\var}{\mathrm{var}}
+%mean
+\newcommand{\mean}[1]{\overline{#1}}
+% Fourier transformation
+\newcommand{\FT}[1]{\mathcal{F}\left[#1\right]}
+\newcommand{\iFT}[1]{\mathcal{F}^{-1}\left[#1\right]}
+% For functions in the Fourier space
+\newcommand{\fs}[1]{\Tilde{#1}}
+% Hankel transformation
+\newcommand{\HT}[1]{\mathcal{H}\left[#1\right]}
+\newcommand{\iHT}[1]{\mathcal{H}^{-1}\left[#1\right]}
+
+% define a term in bold red
+\newcommand{\red}[1]{\textcolor{red}{\textbf{#1}}}
+
+% others
+\newcommand{\order}{\mathcal{O}}
+\newcommand{\ic}{\mathrm{i}}
+\newcommand{\knyq}{k_\mathrm{Nyq}}
+
+%% Equations
+\newcommand\be{\begin{equation}}
+\newcommand\ee{\end{equation}}
+\def\bea{\begin{eqnarray}}
+\def\eea{\end{eqnarray}}
+\newcommand{\vs}{\nonumber\\}
+\newcommand{\ec}[1]{Eq.~(\ref{eq:#1})}
+\newcommand{\Ec}[1]{(\ref{eq:#1})}
+\newcommand{\eql}[1]{\label{eq:#1}}
+
+
+%% Figures
+\newcommand{\sfig}[2]{
+\begin{center}
+\includegraphics[width=#2]{#1}
+\end{center}
+        }
+\newcommand{\Sjpg}[2]{
+    \begin{figure}[htb]
+    \sfig{figs/#1.jpg}{.6\columnwidth}
+    \caption{{\small #2}}
+    \label{fig:#1}
+    \end{figure}
+}
+\newcommand{\Sfig}[2]{
+    \begin{figure}[htb]
+    \sfig{./figs/#1.pdf}{\columnwidth}
+    \caption{{\small #2}}
+    \label{fig:#1}
+    \end{figure}
+}
+\newcommand{\Spng}[2]{
+    \begin{figure}[htb]
+    \sfig{./figs/#1.png}{0.8\columnwidth}
+    \caption{{\small #2}}
+    \label{fig:#1}
+    \end{figure}
+}
+\newcommand{\Sppng}[2]{
+    \begin{figure}[htb]
+    \sfig{../figs/#1.png}{0.98\columnwidth}
+    \caption{{\small #2}}
+    \label{fig:#1}
+    \end{figure}
+}
+\newcommand\rf[1]{(\ref{fig:#1})}
+

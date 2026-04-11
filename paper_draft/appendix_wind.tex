@@ -1,0 +1,65 @@
+\section{Initial Wind Estimate}
+%\appendix{Initial Wind Estimate}
+
+{\bf This comes directly from cluade; I have to clean it up.}
+
+The TOD is a vector $\mathbf{d}$ of length $N_t \times N_{\rm pix}^2$, where $N_t$ is the number of
+  timesteps and $N_{\rm pix}^2$ is the number of detectors (arranged on a square grid). We reshape into  
+  per-timestep maps:                                           
+                                                                                                         
+  $$m_t(x,y) = d_{t \cdot N_{\rm pix}^2 + y \cdot N_{\rm pix} + x}, \quad t = 0, \ldots, N_t - 1$$       
+  
+  Each map contains CMB signal (fixed), atmosphere (drifting), and noise:                                
+                                                               
+  $$m_t(x,y) = T_{\rm CMB}(x,y) + a(x + v_x t,; y + v_y t) + n_t(x,y)$$                                  
+                                                               
+  The CMB is the same in every timestep, so subtracting the per-map mean removes the DC mode and reduces 
+  the CMB contribution:                                        
+                                                                                                         
+  $$\tilde{m}_t(x,y) = m_t(x,y) - \langle m_t \rangle$$                                                  
+  
+  We apply a Hann window to suppress edge effects:                                                       
+                                                               
+  $$\hat{m}_t(x,y) = \tilde{m}_t(x,y) ; W(x) ; W(y)$$
+  with
+  $$  W(u) = \frac{1}{2}\left(1 - \cos\frac{2\pi     
+  u}{N{\rm pix}-1}\right)$$
+                                                                                                         
+  Each map is then zero-padded to size $2N_{\rm pix} \times 2N_{\rm pix}$ to avoid circular-correlation  
+  artifacts.
+                                                                                                         
+  For a pair of maps separated by $\Delta t$ timesteps, the cross-correlation is computed via FFT:       
+  
+  $$C_{\Delta t}^{(t)}(\Delta x, \Delta y) = \mathcal{F}^{-1}!\Big[,\mathcal{F}[\hat{m}_{t+\Delta t}]^*  
+  ;\cdot; \mathcal{F}[\hat{m}_t],\Big](\Delta x, \Delta y)$$   
+                                                                                                         
+  Since the atmosphere shifts by $(v_x \Delta t,; v_y \Delta t)$ between these maps and dominates the    
+  signal, $C$ peaks near $(\Delta x, \Delta y) = (v_x \Delta t,; v_y \Delta t)$.
+                                                                                                         
+  The integer peak location is found by:                       
+
+  $$(i_x, i_y) = \arg\max_{\Delta x, \Delta y} ; C_{\Delta t}^{(t)}(\Delta x, \Delta y)$$                
+  
+  with wrapping so that $i > N_{\rm pix}$ maps to $i - 2N_{\rm pix}$ (negative shifts).                  
+                                                               
+  Sub-pixel refinement uses parabolic interpolation along each axis. For the $x$-direction:              
+                                                               
+  $$i_x^{\rm sub} = i_x + \frac{C(i_x - 1) - C(i_x + 1)}{2\big[2,C(i_x) - C(i_x - 1) - C(i_x + 1)\big]}$$
+                                                               
+  and likewise for $y$. The velocity estimate from this pair is:                                         
+                                                               
+  $$v_x^{(t,\Delta t)} = \frac{i_x^{\rm sub}}{\Delta t}, \quad v_y^{(t,\Delta t)} = \frac{i_y^{\rm       
+  sub}}{\Delta t}$$                                            
+                                                                                                         
+  This is repeated for all valid starting times $t$ and for multiple time separations $\Delta t \in {1,  
+  2, 4, 8}$. The final estimate is the median over all pairs: 
+                                                                                                         
+  $$\hat{v}_x = \mathrm{median}\big\{
+  v_x^{(t,\Delta t)}\big\}, \quad \hat{v}_y =                           
+  \mathrm{median}\big\{v_y^{(t,\Delta t)}
+  \big\}$$
+                                                                                                         
+  The median provides robustness against outlier pairs (e.g., where noise or the CMB happens to create a 
+  spurious peak). Using multiple $\Delta t$ values helps because larger separations give bigger
+  atmospheric shifts (easier to measure) while smaller separations give more independent pairs.          
+                                    
