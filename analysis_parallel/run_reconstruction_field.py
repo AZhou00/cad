@@ -18,6 +18,7 @@ Usage:
 
 Optional argv:
   list              -- print status table for all observations, do not run
+  list-ids          -- print one incomplete observation id per line (machine-readable; for batching)
   list <obs_id>     -- print one row for that observation only
   <obs_id>          -- only that observation: if incomplete, run run_reconstruction.py once
                        (same as: python cad/analysis_parallel/run_reconstruction.py <field> <obs_id>)
@@ -69,9 +70,12 @@ def _observation_dirs(root: Path) -> list[Path]:
 def main() -> None:
     argv = sys.argv[1:]
     list_only = False
+    list_ids_only = False
     single_obs: str | None = None
     if not argv:
         pass
+    elif argv[0] == "list-ids":
+        list_ids_only = True
     elif argv[0] == "list":
         list_only = True
         if len(argv) >= 2 and argv[1].isdigit():
@@ -80,7 +84,7 @@ def main() -> None:
         single_obs = argv[0]
     else:
         print(
-            "Usage: run_reconstruction_field.py [list [obs_id] | <obs_id>]",
+            "Usage: run_reconstruction_field.py [list-ids | list [obs_id] | <obs_id>]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -94,7 +98,11 @@ def main() -> None:
     else:
         obs_dirs = _observation_dirs(FIELD_SCRATCH_ROOT)
     if not obs_dirs:
-        print(f"No numeric observation subdirs under {FIELD_SCRATCH_ROOT}", flush=True)
+        print(
+            f"No numeric observation subdirs under {FIELD_SCRATCH_ROOT}",
+            flush=True,
+            file=sys.stderr,
+        )
         return
 
     rows: list[tuple[str, str, int | str, int, str]] = []
@@ -110,6 +118,12 @@ def main() -> None:
             rows.append((oid, "ok", n_b, n_s, "done"))
         else:
             rows.append((oid, "incomplete", n_b, n_s, "run" if not list_only else "would_run"))
+
+    if list_ids_only:
+        for oid, st, _, _, _ in rows:
+            if st == "incomplete":
+                print(oid, flush=True)
+        return
 
     w_obs = max(len(r[0]) for r in rows)
     print(f"field={FIELD_ID} root={FIELD_SCRATCH_ROOT}", flush=True)
