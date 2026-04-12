@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 """
-Run reconstruction for every observation under a field scratch root where work remains.
+Run reconstruction for every incomplete observation under the field scratch root, or list their ids.
 
-Completion rule (same as checking whether reconstruction finished):
+Completion rule:
   len(binned_tod_10arcmin/*.npz) == len(scans/scan_*_ml.npz)
 
-Observations without a binned_tod_10arcmin directory on scratch are skipped (logged); there is
-nothing to align with scans/ until that data exists there.
-
-Note: build_layout discovers observations and binned_tod_10arcmin under OUT_BASE/<field_id>/ on
-scratch (see build_layout.py), matching this script.
+Uses OUT_BASE/<field_id>/ on scratch (same tree as build_layout.py). Subdirs without
+binned_tod_10arcmin or with empty binned are skipped.
 
 Usage:
   module load conda; module load gpu/1.0; conda activate jax
   cd <repo_root>
+
   python cad/analysis_parallel/run_reconstruction_field.py
+      Print a status table (binned vs scan_ml counts per obs), then run
+      run_reconstruction.py once per incomplete observation (sequential).
 
-Optional argv:
-  list              -- print status table for all observations, do not run
-  list-ids          -- print one incomplete observation id per line (machine-readable; for batching)
-  list <obs_id>     -- print one row for that observation only
-  <obs_id>          -- only that observation: if incomplete, run run_reconstruction.py once
-                       (same as: python cad/analysis_parallel/run_reconstruction.py <field> <obs_id>)
+  python cad/analysis_parallel/run_reconstruction_field.py list-ids
+      Print one incomplete observation id per line (stdout). Used by
+      nersc_pm_submit_reconstruction_incomplete.sh. No reconstruction.
 
-Fastest path for one observation and remaining scans only: call run_reconstruction.py directly;
-it skips existing scan_*_ml.npz after rebuild_layout.
+Single-observation runs: use run_reconstruction.py <field_id> <obs_id> directly.
 """
 
 from __future__ import annotations
@@ -67,44 +63,10 @@ def _observation_dirs(root: Path) -> list[Path]:
     return out
 
 
-def main() -> None:
-    argv = sys.argv[1:]
-    list_only = False
-    list_ids_only = False
-    single_obs: str | None = None
-    if not argv:
-        pass
-    elif argv[0] == "list-ids":
-        list_ids_only = True
-    elif argv[0] == "list":
-        list_only = True
-        if len(argv) >= 2 and argv[1].isdigit():
-            single_obs = argv[1]
-    elif argv[0].isdigit():
-        single_obs = argv[0]
-    else:
-        print(
-            "Usage: run_reconstruction_field.py [list-ids | list [obs_id] | <obs_id>]",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if single_obs is not None:
-        obs_path = FIELD_SCRATCH_ROOT / single_obs
-        if not obs_path.is_dir():
-            print(f"No observation directory: {obs_path}", flush=True)
-            sys.exit(1)
-        obs_dirs = [obs_path]
-    else:
-        obs_dirs = _observation_dirs(FIELD_SCRATCH_ROOT)
-    if not obs_dirs:
-        print(
-            f"No numeric observation subdirs under {FIELD_SCRATCH_ROOT}",
-            flush=True,
-            file=sys.stderr,
-        )
-        return
-
+def _status_rows(
+    obs_dirs: list[Path],
+) -> list[tuple[str, str, int | str, int, str]]:
+    """One row per obs: (obs_id, status, binned_npz or '-', scan_ml_npz, action)."""
     rows: list[tuple[str, str, int | str, int, str]] = []
     for obs in obs_dirs:
         oid = obs.name
@@ -117,14 +79,11 @@ def main() -> None:
         elif n_s == n_b:
             rows.append((oid, "ok", n_b, n_s, "done"))
         else:
-            rows.append((oid, "incomplete", n_b, n_s, "run" if not list_only else "would_run"))
+            rows.append((oid, "incomplete", n_b, n_s, "run"))
+    return rows
 
-    if list_ids_only:
-        for oid, st, _, _, _ in rows:
-            if st == "incomplete":
-                print(oid, flush=True)
-        return
 
+def _print_status_table(rows: list[tuple[str, str, int | str, int, str]]) -> None:
     w_obs = max(len(r[0]) for r in rows)
     print(f"field={FIELD_ID} root={FIELD_SCRATCH_ROOT}", flush=True)
     print(
@@ -134,17 +93,44 @@ def main() -> None:
     for oid, st, nb, ns, act in rows:
         nb_s = str(nb)
         print(f"{oid:>{w_obs}}  {st:<14}  {nb_s:>10}  {ns:>11}  {act}", flush=True)
+    print(flush=True)
 
-    if list_only:
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if len(argv) > 1:
+        print("Usage: run_reconstruction_field.py [list-ids]", file=sys.stderr)
+        sys.exit(2)
+    list_ids = len(argv) == 1
+    if list_ids and argv[0] != "list-ids":
+        print("Usage: run_reconstruction_field.py [list-ids]", file=sys.stderr)
+        sys.exit(2)
+
+    obs_dirs = _observation_dirs(FIELD_SCRATCH_ROOT)
+    if not obs_dirs:
+        print(
+            f"No numeric observation subdirs under {FIELD_SCRATCH_ROOT}",
+            flush=True,
+            file=sys.stderr,
+        )
         return
 
-    to_run = [oid for oid, st, _, _, act in rows if act == "run"]
-    if not to_run:
+    rows = _status_rows(obs_dirs)
+    incomplete = [oid for oid, st, _, _, _ in rows if st == "incomplete"]
+
+    if list_ids:
+        for oid in incomplete:
+            print(oid, flush=True)
+        return
+
+    _print_status_table(rows)
+
+    if not incomplete:
         print("Nothing to run.", flush=True)
         return
 
     recon = BASE_DIR / "run_reconstruction.py"
-    for oid in to_run:
+    for oid in incomplete:
         cmd = [sys.executable, str(recon), FIELD_ID, oid]
         print("[run]", " ".join(cmd), flush=True)
         subprocess.run(cmd, cwd=str(CAD_ROOT), check=True)
