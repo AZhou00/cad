@@ -24,7 +24,9 @@ Provenance: scan_metadata object array of dicts (observation_id, scan_index, win
 
 from __future__ import annotations
 
+import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import jax
@@ -205,6 +207,67 @@ def _remap_pixels_to_inner_bbox(
     iy_new = iy_old[keep] - int(my)
     pix_new = iy_new + ix_new * int(ny_inner)
     return np.asarray(pix_new, dtype=np.int64), keep
+
+
+def _union_super_plate_from_layouts(layouts: list[tuple[str, GlobalLayout]]) -> tuple[int, int, int, int, float]:
+    """
+    Smallest axis-aligned plate bbox (global ix, iy indices) containing every layout's CMB grid.
+
+    Returns:
+      bbox_ix0_s, bbox_iy0_s, nx_s, ny_s, pixel_size_deg (common across layouts, checked).
+    """
+    if not layouts:
+        raise ValueError("layouts must be non-empty")
+    ps0 = float(layouts[0][1].pixel_size_deg)
+    for _oid, lay in layouts[1:]:
+        if not np.isclose(float(lay.pixel_size_deg), ps0, rtol=0.0, atol=1e-15):
+            raise ValueError(
+                "run_synthesis_multi_obs requires identical pixel_size_deg for every observation "
+                f"(got {ps0} vs {lay.pixel_size_deg})."
+            )
+    ix0_s = min(int(lay.bbox_ix0) for _, lay in layouts)
+    iy0_s = min(int(lay.bbox_iy0) for _, lay in layouts)
+    ix1_s = max(int(lay.bbox_ix0) + int(lay.nx) - 1 for _, lay in layouts)
+    iy1_s = max(int(lay.bbox_iy0) + int(lay.ny) - 1 for _, lay in layouts)
+    nx_s = int(ix1_s - ix0_s + 1)
+    ny_s = int(iy1_s - iy0_s + 1)
+    if nx_s <= 0 or ny_s <= 0:
+        raise ValueError("invalid union plate from layouts")
+    return ix0_s, iy0_s, nx_s, ny_s, ps0
+
+
+def _local_flat_pixels_to_super_flat(
+    pix_local: np.ndarray,
+    *,
+    bbox_ix0: int,
+    bbox_iy0: int,
+    ny_local: int,
+    ix0_s: int,
+    iy0_s: int,
+    ny_super: int,
+) -> np.ndarray:
+    """
+    Map flat indices on one observation plate to flat indices on the union super-plate.
+
+    Convention matches util.pointing_from_pix_index: pix = iy + ix*ny (local within that ny).
+
+    Args:
+      pix_local: (n,) int64 local flat indices for that observation's layout.npz grid.
+      ny_local: that layout's ny (same as in pix = iy + ix*ny).
+      ix0_s, iy0_s, ny_super: super-plate origin and width.
+
+    Returns:
+      (n,) int64 super flat indices in [0, nx_super * ny_super).
+    """
+    p = np.asarray(pix_local, dtype=np.int64)
+    ny_l = int(ny_local)
+    ix_loc = p // ny_l
+    iy_loc = p - ix_loc * ny_l
+    ix_g = ix_loc + int(bbox_ix0)
+    iy_g = iy_loc + int(bbox_iy0)
+    ix_s = ix_g - int(ix0_s)
+    iy_s = iy_g - int(iy0_s)
+    return (iy_s + ix_s * int(ny_super)).astype(np.int64, copy=False)
 
 
 def _margined_obs_index(
@@ -401,6 +464,11 @@ def run_synthesis_multi_obs(
     Load all scan npzs from OUT_BASE/field_id/obs_id/scans/ for each obs_id, build combined layout,
     accumulate cov_inv and Pt_Ninv_d, solve, write one NPZ at out_dir / out_filename (see run_synthesis).
     Returns (combined_layout, written_npz_path).
+
+    Observations may have different layout.npz (bbox_ix0, bbox_iy0, nx, ny). Local flat indices are
+    remapped to a union super-plate containing all grids; pixel_size_deg must match. When every
+    observation shares the same bbox and ny, remapping is the identity and behavior matches the
+    former single-grid path.
     """
     if not observation_ids:
         raise ValueError("observation_ids must be non-empty")
@@ -424,22 +492,34 @@ def run_synthesis_multi_obs(
     if not artifact_paths:
         raise FileNotFoundError(f"No scan_*_ml.npz found under {out_base / field_id} for {observation_ids}")
 
-    # Preserve original trajectory: build one combined/global layout first.
-    first = layouts[0][1]
-    obs_pix_union = sorted(set().union(*(set(lay.obs_pix_global.tolist()) for _, lay in layouts)))
-    n_pix_full = first.n_pix
-    global_to_obs_full = np.full(n_pix_full, -1, dtype=np.int64)
+    layout_by_obs = {oid: lay for oid, lay in layouts}
+    ix0_s, iy0_s, nx_s, ny_s, ps_deg = _union_super_plate_from_layouts(layouts)
+    n_pix_super = int(nx_s * ny_s)
+    obs_super_set: set[int] = set()
+    for _oid, lay in layouts:
+        p_sup = _local_flat_pixels_to_super_flat(
+            lay.obs_pix_global,
+            bbox_ix0=lay.bbox_ix0,
+            bbox_iy0=lay.bbox_iy0,
+            ny_local=lay.ny,
+            ix0_s=ix0_s,
+            iy0_s=iy0_s,
+            ny_super=ny_s,
+        )
+        obs_super_set.update(int(x) for x in p_sup.tolist())
+    obs_pix_union = sorted(obs_super_set)
+    global_to_obs_full = np.full(n_pix_super, -1, dtype=np.int64)
     for i, p in enumerate(obs_pix_union):
         global_to_obs_full[p] = i
     combined_layout_full = GlobalLayout(
-        bbox_ix0=first.bbox_ix0,
-        bbox_iy0=first.bbox_iy0,
-        nx=first.nx,
-        ny=first.ny,
+        bbox_ix0=ix0_s,
+        bbox_iy0=iy0_s,
+        nx=nx_s,
+        ny=ny_s,
         obs_pix_global=np.array(obs_pix_union, dtype=np.int64),
         global_to_obs=global_to_obs_full,
         scan_paths=(),
-        pixel_size_deg=first.pixel_size_deg,
+        pixel_size_deg=ps_deg,
         field_id=field_id,
     )
 
@@ -458,7 +538,7 @@ def run_synthesis_multi_obs(
         obs_pix_global=obs_pix_global,
         global_to_obs=global_to_obs,
         scan_paths=(),
-        pixel_size_deg=first.pixel_size_deg,
+        pixel_size_deg=ps_deg,
         field_id=field_id,
     )
 
@@ -474,8 +554,18 @@ def run_synthesis_multi_obs(
         t_load += time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        obs_pix_global_scan_inner, keep = _remap_pixels_to_inner_bbox(
+        lay_scan = layout_by_obs[obs_id]
+        pix_super = _local_flat_pixels_to_super_flat(
             art["obs_pix_global_scan"],
+            bbox_ix0=lay_scan.bbox_ix0,
+            bbox_iy0=lay_scan.bbox_iy0,
+            ny_local=lay_scan.ny,
+            ix0_s=combined_layout_full.bbox_ix0,
+            iy0_s=combined_layout_full.bbox_iy0,
+            ny_super=combined_layout_full.ny,
+        )
+        obs_pix_global_scan_inner, keep = _remap_pixels_to_inner_bbox(
+            pix_super,
             nx_old=combined_layout_full.nx,
             ny_old=combined_layout_full.ny,
             mx=mx,

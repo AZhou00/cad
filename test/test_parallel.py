@@ -15,7 +15,11 @@ import pytest
 
 from cad.parallel_solve.layout import GlobalLayout, load_layout
 from cad.parallel_solve.artifact_io import load_scan_artifact
-from cad.parallel_solve.synthesize_scan import run_synthesis
+from cad.parallel_solve.synthesize_scan import (
+    run_synthesis,
+    _local_flat_pixels_to_super_flat,
+    _union_super_plate_from_layouts,
+)
 
 
 # --- Layout ---
@@ -122,3 +126,83 @@ def test_synthesis_two_scans_minimal():
         assert np.all(np.isfinite(c_hat_obs))
         assert c_hat_full_mk.shape == (n_pix,)
         assert np.all(np.isfinite(c_hat_full_mk[layout.obs_pix_global]))
+
+
+def test_union_super_plate_identity_when_all_layouts_share_grid():
+    """Same bbox and ny => super plate equals each layout; flat remap is identity."""
+    n_pix = 12
+    obs = np.array([0, 5, 11], dtype=np.int64)
+    g2o = np.full(n_pix, -1, dtype=np.int64)
+    g2o[obs] = np.arange(3, dtype=np.int64)
+    lay = GlobalLayout(
+        bbox_ix0=10,
+        bbox_iy0=-3,
+        nx=4,
+        ny=3,
+        obs_pix_global=obs,
+        global_to_obs=g2o,
+        scan_paths=(Path("/dummy/s"),),
+        pixel_size_deg=0.16666666666666666,
+        field_id="t",
+    )
+    layouts = [("a", lay), ("b", lay)]
+    ix0_s, iy0_s, nx_s, ny_s, ps = _union_super_plate_from_layouts(layouts)
+    assert (ix0_s, iy0_s, nx_s, ny_s) == (10, -3, 4, 3)
+    assert ps == lay.pixel_size_deg
+    p_all = np.arange(n_pix, dtype=np.int64)
+    out = _local_flat_pixels_to_super_flat(
+        p_all,
+        bbox_ix0=lay.bbox_ix0,
+        bbox_iy0=lay.bbox_iy0,
+        ny_local=lay.ny,
+        ix0_s=ix0_s,
+        iy0_s=iy0_s,
+        ny_super=ny_s,
+    )
+    assert np.array_equal(out, p_all)
+
+
+def test_union_super_plate_remap_offset_bbox():
+    """Two non-overlapping same-size patches: super bbox is the union; locals map to distinct super flats."""
+    ny = 3
+
+    def _mini(bix: int, biy: int) -> GlobalLayout:
+        n_pix = 6
+        obs = np.arange(n_pix, dtype=np.int64)
+        g2o = np.arange(n_pix, dtype=np.int64)
+        return GlobalLayout(
+            bbox_ix0=bix,
+            bbox_iy0=biy,
+            nx=2,
+            ny=ny,
+            obs_pix_global=obs,
+            global_to_obs=g2o,
+            scan_paths=(Path("/x"),),
+            pixel_size_deg=0.1,
+            field_id="t",
+        )
+
+    lay0 = _mini(0, 0)
+    lay1 = _mini(2, 0)
+    ix0_s, iy0_s, nx_s, ny_s, _ps = _union_super_plate_from_layouts([("0", lay0), ("1", lay1)])
+    assert (ix0_s, iy0_s, nx_s, ny_s) == (0, 0, 4, 3)
+    s0 = _local_flat_pixels_to_super_flat(
+        np.array([0], dtype=np.int64),
+        bbox_ix0=0,
+        bbox_iy0=0,
+        ny_local=ny,
+        ix0_s=ix0_s,
+        iy0_s=iy0_s,
+        ny_super=ny_s,
+    )
+    s1 = _local_flat_pixels_to_super_flat(
+        np.array([0], dtype=np.int64),
+        bbox_ix0=2,
+        bbox_iy0=0,
+        ny_local=ny,
+        ix0_s=ix0_s,
+        iy0_s=iy0_s,
+        ny_super=ny_s,
+    )
+    assert int(s0[0]) == 0
+    assert int(s1[0]) == 6

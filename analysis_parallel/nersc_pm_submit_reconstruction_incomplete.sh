@@ -15,7 +15,6 @@
 # Dry-run (print sbatch lines only):
 #   DRY_RUN=1 ./cad/analysis_parallel/nersc_pm_submit_reconstruction_incomplete.sh
 #
-set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)

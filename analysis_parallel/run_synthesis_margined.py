@@ -14,10 +14,9 @@ CLI
 ---
   python run_synthesis_margined.py [observation_ids]
 
-  observation_ids: optional, comma-separated list (no spaces). If omitted, uses every numeric
-  observation directory under OUT_BASE/FIELD_ID/ that is reconstruction-complete:
-  len(binned_tod_10arcmin/*.npz) == len(scans/scan_*_ml.npz) with non-empty binned (same rule as
-  run_reconstruction_field.py "ok" rows).
+  observation_ids: optional, comma-separated list (no spaces). If omitted, discovers every
+  reconstruction-complete observation (same rule as run_synthesis_full.py). Multi-obs synthesis uses
+  a union plate grid across differing layout bboxes (see run_synthesis_multi_obs).
 """
 
 from __future__ import annotations
@@ -31,7 +30,12 @@ CAD_DIR = BASE_DIR.parent
 if str(CAD_DIR / "src") not in sys.path:
     sys.path.insert(0, str(CAD_DIR / "src"))
 
-from cad.parallel_solve import load_layout, run_synthesis, run_synthesis_multi_obs
+from cad.parallel_solve import (
+    discover_synthesis_ready_observation_ids,
+    load_layout,
+    run_synthesis,
+    run_synthesis_multi_obs,
+)
 
 FIELD_ID = "ra0hdec-59.75"
 OUT_BASE = pathlib.Path("/pscratch/sd/j/junzhez/cmb-atmosphere-data")
@@ -44,46 +48,15 @@ LANCZOS_MAXITER = 2048
 # Heuristic: lanczos_maxiter >= 2 * N_UNCERTAIN_MODES; oversample ~ N_UNCERTAIN_MODES/16..N_UNCERTAIN_MODES/4.
 
 
-def _count_binned_npz(obs_dir: pathlib.Path) -> int | None:
-    binned = obs_dir / "binned_tod_10arcmin"
-    if not binned.is_dir():
-        return None
-    return sum(1 for _ in binned.glob("*.npz"))
-
-
-def _count_scan_ml_npz(obs_dir: pathlib.Path) -> int:
-    scans = obs_dir / "scans"
-    if not scans.is_dir():
-        return 0
-    return sum(1 for _ in scans.glob("scan_*_ml.npz"))
-
-
-def discover_processed_observation_ids(field_root: pathlib.Path) -> list[str]:
-    """Obs ids under field_root with non-empty binned TOD and matching scan_*_ml count."""
-    if not field_root.is_dir():
-        return []
-    out: list[str] = []
-    subdirs = [p for p in field_root.iterdir() if p.is_dir() and p.name.isdigit()]
-    subdirs.sort(key=lambda p: int(p.name))
-    for obs_dir in subdirs:
-        n_b = _count_binned_npz(obs_dir)
-        n_s = _count_scan_ml_npz(obs_dir)
-        if n_b is None or n_b == 0:
-            continue
-        if n_s == n_b:
-            out.append(obs_dir.name)
-    return out
-
-
 def main() -> None:
     if len(sys.argv) >= 2:
         observation_ids = [s.strip() for s in sys.argv[1].split(",") if s.strip()]
     else:
-        observation_ids = discover_processed_observation_ids(OUT_BASE / FIELD_ID)
+        observation_ids = discover_synthesis_ready_observation_ids(OUT_BASE / FIELD_ID)
     if not observation_ids:
         print(
-            f"No processed observations found under {OUT_BASE / FIELD_ID} "
-            "(need binned_tod_10arcmin/*.npz count == scans/scan_*_ml.npz, non-empty binned).",
+            f"No synthesis-ready observations under {OUT_BASE / FIELD_ID}: need reconstruction-complete "
+            "directories (non-empty binned_tod_10arcmin, matching scan_*_ml count) with layout.npz.",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -19,10 +19,6 @@
 #SBATCH --output=cmb-recon-one-%j.out
 #SBATCH --error=cmb-recon-one-%j.err
 
-export SLURM_CPU_BIND="cores"
-
-set -euo pipefail
-
 # sbatch passes arguments after the script path as $1, $2, ... to the batch script at run time.
 # Fallback: OBS_ID=... sbatch --export=ALL,OBS_ID (or include in submit wrapper).
 FIELD_ID="ra0hdec-59.75"

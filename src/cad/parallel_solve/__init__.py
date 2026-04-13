@@ -8,11 +8,13 @@ from .artifact_io import load_scan_artifact
 from .layout import (
     GlobalLayout,
     build_layout,
-    load_layout,
-    save_layout,
+    cmb_grid_signature,
     discover_fields,
     discover_scan_paths,
+    discover_synthesis_ready_observation_ids,
+    load_layout,
     load_scan_for_layout,
+    save_layout,
 )
 from .synthesize_scan import run_synthesis, run_synthesis_multi_obs
 
@@ -26,10 +28,12 @@ def run_one_scan(*args, **kwargs):
 __all__ = [
     "GlobalLayout",
     "build_layout",
+    "cmb_grid_signature",
     "load_layout",
     "save_layout",
     "discover_fields",
     "discover_scan_paths",
+    "discover_synthesis_ready_observation_ids",
     "load_scan_for_layout",
     "run_one_scan",
     "run_synthesis",

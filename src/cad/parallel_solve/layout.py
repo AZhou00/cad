@@ -153,3 +153,50 @@ def load_layout(npz_path: Path) -> GlobalLayout:
         pixel_size_deg=pixel_size_deg,
         field_id=field_id,
     )
+
+
+def cmb_grid_signature(layout: GlobalLayout) -> tuple[int, int, int, int, float]:
+    """
+    CMB plate grid identity for multi-observation synthesis.
+
+    Flat indices pix = iy + ix*ny are only meaningful when (bbox_ix0, bbox_iy0, nx, ny) and
+    pixel_size_deg match across observations.
+    """
+    return (
+        int(layout.bbox_ix0),
+        int(layout.bbox_iy0),
+        int(layout.nx),
+        int(layout.ny),
+        float(layout.pixel_size_deg),
+    )
+
+
+def discover_synthesis_ready_observation_ids(field_root: Path) -> list[str]:
+    """
+    Numeric observation directories under field_root suitable for multi-obs synthesis.
+
+    Requires: non-empty binned_tod_10arcmin/*.npz, same count as scans/scan_*_ml.npz, and
+    layout.npz present. Sorted by integer obs id.
+
+    run_synthesis_multi_obs builds a union plate bbox and remaps each observation's local flat
+    indices (pix = iy + ix*ny) into that grid; pixel_size_deg must match across observations.
+    """
+    if not field_root.is_dir():
+        return []
+    subdirs = sorted(
+        (p for p in field_root.iterdir() if p.is_dir() and p.name.isdigit()),
+        key=lambda p: int(p.name),
+    )
+    out: list[str] = []
+    for obs_dir in subdirs:
+        binned = obs_dir / "binned_tod_10arcmin"
+        scans = obs_dir / "scans"
+        layout_path = obs_dir / "layout.npz"
+        if not binned.is_dir() or not scans.is_dir() or not layout_path.exists():
+            continue
+        n_b = sum(1 for _ in binned.glob("*.npz"))
+        n_s = sum(1 for _ in scans.glob("scan_*_ml.npz"))
+        if n_b == 0 or n_s != n_b:
+            continue
+        out.append(obs_dir.name)
+    return out
